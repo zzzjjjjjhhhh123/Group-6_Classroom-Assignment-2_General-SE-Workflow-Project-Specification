@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+projects/
+__pycache__/
+*.py[cod]
+server.log
+server-error.log

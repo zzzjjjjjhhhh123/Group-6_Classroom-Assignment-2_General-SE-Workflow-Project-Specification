@@ -1,0 +1,1667 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SE Workflow · 设计规格 → 任务分解 → 编排可视化</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1a1e24; --muted:#7a8290; --line:#e8eaee;
+    --accent:#2f6fed; --accent-soft:#eef3ff; --ok:#0f766e; --ok-soft:#e9f5f2;
+    --warn:#b45309; --warn-soft:#fdf4e7; --danger:#c0392b; --danger-soft:#fdecea;
+    --radius:10px; --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+    display:grid; grid-template-rows:auto 1fr; height:100vh; overflow:hidden;
+  }
+  /* ---------- header ---------- */
+  header{
+    display:flex; align-items:center; gap:14px; padding:0 20px; height:52px;
+    background:var(--panel); border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex; align-items:baseline; gap:10px; min-width:0}
+  .brand b{font-size:15px; letter-spacing:.2px}
+  .brand span{color:var(--muted); font-size:12px; white-space:nowrap}
+  .steps{display:flex; gap:4px; margin-left:auto; align-items:center}
+  .step{
+    display:flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+    color:var(--muted); font-size:12px; white-space:nowrap; cursor:pointer;
+  }
+  .step.on{background:var(--accent-soft); color:var(--accent); font-weight:600}
+  .step i{font-style:normal; width:16px; height:16px; border-radius:50%;
+    display:grid; place-items:center; font-size:10px; border:1px solid currentColor}
+  .badge-llm{font-size:11px; padding:3px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted)}
+  .badge-llm.on{border-color:#c6d8ff; background:var(--accent-soft); color:var(--accent)}
+
+  /* ---------- layout ---------- */
+  main{display:grid; grid-template-columns:320px 1fr; min-height:0}
+  aside{
+    background:var(--panel); border-right:1px solid var(--line);
+    padding:16px 18px; overflow:auto; display:flex; flex-direction:column; gap:20px;
+  }
+  .section{display:flex; flex-direction:column; gap:8px}
+  .section h3{
+    margin:0 0 2px; font-size:12px; letter-spacing:.5px; color:var(--muted);
+    display:flex; align-items:center; gap:7px;
+  }
+  .section h3:before{content:""; width:3px; height:12px; border-radius:2px; background:var(--accent); opacity:.55}
+  textarea{
+    width:100%; min-height:190px; resize:vertical; padding:10px 12px; border:1px solid var(--line);
+    border-radius:var(--radius); font:12px/1.65 var(--mono); color:var(--ink); background:#fcfcfd;
+  }
+  textarea:focus,input:focus,select:focus{outline:2px solid var(--accent-soft); border-color:var(--accent)}
+  .row{display:flex; gap:8px; align-items:center}
+  .row > label{flex:1; font-size:12.5px; color:var(--ink)}
+  select,input[type=number],input[type=text]{
+    border:1px solid var(--line); border-radius:8px; padding:5px 9px; font-size:12.5px;
+    background:#fff; color:var(--ink); font-family:inherit; height:30px;
+  }
+  select{min-width:132px}
+  button{
+    border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:8px;
+    padding:7px 12px; font-size:12.5px; cursor:pointer; font-family:inherit; transition:.15s; height:32px;
+  }
+  button:hover{border-color:#c9cfd8; background:#fafbfc}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600}
+  button.primary:hover{background:#255ddb}
+  button.ghost{background:transparent; border-color:transparent; color:var(--muted)}
+  button.ghost:hover{color:var(--ink); background:#f1f3f6}
+  button:disabled{opacity:.45; cursor:not-allowed}
+  .chips{display:flex; flex-wrap:wrap; gap:6px}
+  .chip{
+    font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--line);
+    background:#fff; cursor:pointer; color:var(--ink);
+  }
+  .chip:hover{border-color:var(--accent); color:var(--accent)}
+  .chip.on{border-color:var(--accent); color:var(--accent); background:var(--accent-soft); font-weight:600}
+  .hint{font-size:11.5px; color:var(--muted); line-height:1.6}
+
+  /* ---------- content ---------- */
+  .content{display:grid; grid-template-rows:auto 1fr auto; min-width:0; min-height:0}
+  .tabs{display:flex; gap:2px; padding:8px 20px 0; background:var(--panel); border-bottom:1px solid var(--line)}
+  .tab{
+    padding:8px 16px; font-size:13px; cursor:pointer; color:var(--muted);
+    border-bottom:2px solid transparent; background:transparent;
+  }
+  .tab.on{color:var(--accent); border-bottom-color:var(--accent); font-weight:600}
+  .tab .n{font-size:11px; color:var(--muted); margin-left:5px}
+  .panes{overflow:auto; padding:18px 20px; min-height:0}
+  .pane{display:none}
+  .pane.on{display:block}
+
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; margin-bottom:16px}
+  .card > h4{margin:0 0 12px; font-size:13.5px; display:flex; align-items:baseline; gap:10px}
+  .card > h4 .sub{font-weight:400; color:var(--muted); font-size:11.5px}
+  table{width:100%; border-collapse:collapse; font-size:12.5px}
+  th,td{text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:middle}
+  th{font-size:11.5px; color:var(--muted); font-weight:600; position:sticky; top:0; z-index:1; background:var(--panel)}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:#fafbfd}
+  td.num,th.num{text-align:right; font-family:var(--mono)}
+  td .dim{display:block; font-size:11px; color:var(--muted); margin-top:1px}
+  .tag{
+    display:inline-block; font-size:11px; padding:1px 7px; border-radius:999px;
+    background:#f1f3f6; color:var(--muted); white-space:nowrap; line-height:1.7;
+  }
+  .tag.p0{background:var(--danger-soft); color:var(--danger)}
+  .tag.p1{background:var(--warn-soft); color:var(--warn)}
+  .tag.p2{background:#f1f3f6; color:var(--muted)}
+  .tag.ready{background:var(--ok-soft); color:var(--ok)}
+  .tag.pending{background:var(--warn-soft); color:var(--warn)}
+  .tag.blocked{background:var(--danger-soft); color:var(--danger)}
+  .tag.llm{background:var(--accent-soft); color:var(--accent)}
+  .tag.human{background:#eef0f4; color:#3f4652}
+  .src{font-family:var(--mono); font-size:11px; color:var(--muted)}
+  .kdot{display:inline-block; width:7px; height:7px; border-radius:2px; margin-right:7px; vertical-align:1px}
+
+  .stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px}
+  .stat{background:#f8f9fb; border-radius:10px; padding:12px 14px}
+  .stat b{display:block; font-size:20px; line-height:1.3}
+  .stat span{font-size:11.5px; color:var(--muted)}
+
+  .banner{border-radius:var(--radius); padding:10px 14px; font-size:12.5px; margin-bottom:14px}
+  .banner.err{background:var(--danger-soft); color:var(--danger)}
+  .banner.warn{background:var(--warn-soft); color:var(--warn)}
+  .banner.info{background:var(--accent-soft); color:#1f4fbf}
+
+  ul.plain{margin:0; padding-left:18px; font-size:12.5px}
+  ul.plain li{margin:4px 0}
+  ul.rationale{margin:0; padding-left:0; list-style:none; font-size:12.5px}
+  ul.rationale li{padding:6px 0 6px 16px; position:relative}
+  ul.rationale li:before{content:"·"; position:absolute; left:4px; color:var(--accent); font-weight:700}
+
+  /* ---------- DAG ---------- */
+  .dagwrap{overflow:auto; border:1px solid var(--line); border-radius:var(--radius); background:#fff}
+  svg.dag{display:block}
+  .node{cursor:pointer}
+  .node rect{transition:.15s}
+  .node:hover rect{filter:brightness(.96)}
+  .impact-direct td{background:#e8f7f4 !important}
+  .impact-direct td:first-child{box-shadow:inset 3px 0 #0f766e}
+  .impact-downstream td{background:#f2edff !important}
+  .impact-downstream td:first-child{box-shadow:inset 3px 0 #7c3aed}
+  .impact-chip{border-color:#0f766e !important; background:#e8f7f4 !important}
+  .lane{display:grid; grid-template-columns:86px 1fr; gap:12px; padding:12px 0; border-bottom:1px solid var(--line)}
+  .lane:last-child{border-bottom:none}
+  .lane-id{font-size:11.5px; color:var(--muted); font-family:var(--mono); padding-top:3px}
+  .lane-id b{display:block; color:var(--ink); font-size:13px; font-family:inherit}
+  .lane-body{display:flex; flex-wrap:wrap; gap:7px; align-items:center}
+  .tchip{
+    display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:7px;
+    padding:4px 10px; font-size:11.5px; background:#fff; cursor:pointer;
+  }
+  .tchip:hover{border-color:var(--accent)}
+  .tchip .dot{width:7px; height:7px; border-radius:2px; background:var(--muted)}
+  .tchip.crit{border-color:#ecd5d2; background:#fdf7f6}
+  .tchip.done{opacity:.5; text-decoration:line-through}
+  .legend{display:flex; flex-wrap:wrap; gap:14px; font-size:11.5px; color:var(--muted); margin-top:10px}
+  .legend i{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px}
+
+  /* ---------- log ---------- */
+  .logbar{border-top:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; max-height:180px; transition:max-height .2s}
+  .logbar.collapsed{max-height:36px}
+  .loghead{display:flex; align-items:center; gap:10px; padding:8px 20px; cursor:pointer; font-size:12px; color:var(--muted)}
+  .loghead b{color:var(--ink); font-size:12.5px}
+  .logbody{overflow:auto; padding:0 20px 10px; font:11.5px/1.8 var(--mono)}
+  .ev{display:grid; grid-template-columns:56px 74px 1fr; gap:10px}
+  .ev .t{color:#a3a9b4}
+  .ev .p{color:var(--accent)}
+  .ev.warn .m{color:var(--warn)}
+  .ev.error .m{color:var(--danger)}
+  .ev.done .m{color:var(--ok); font-weight:600}
+
+  .empty{color:var(--muted); font-size:12.5px; padding:30px; text-align:center; border:1px dashed var(--line); border-radius:var(--radius)}
+  .kv{display:grid; grid-template-columns:88px 1fr; gap:5px 12px; font-size:12.5px}
+  .kv .k{color:var(--muted)}
+  .history{font-size:11.5px; color:var(--muted); display:flex; flex-direction:column; gap:8px}
+  .spinner{width:13px; height:13px; border:2px solid #d5dbe5; border-top-color:var(--accent);
+    border-radius:50%; display:inline-block; animation:spin .7s linear infinite; vertical-align:-2px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ---------- polished workflow workbench ---------- */
+  :root{
+    --bg:#f4f6fb; --panel:#fff; --ink:#172033; --muted:#778196; --line:#e6eaf2;
+    --accent:#4966d8; --accent-soft:#edf1ff; --ok:#168477; --ok-soft:#e6f5f1;
+    --warn:#b7791f; --warn-soft:#fff6e7; --danger:#c34a55; --danger-soft:#fff0f0;
+    --radius:15px;
+  }
+  body{background:var(--bg); color:var(--ink); font-family:Inter,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif}
+  header{
+    position:relative; z-index:3; height:66px; padding:0 26px; gap:22px;
+    background:rgba(255,255,255,.94); border-bottom:1px solid #e8ebf2;
+    box-shadow:0 2px 12px rgba(26,39,70,.035); backdrop-filter:blur(14px)
+  }
+  .brand{gap:12px; align-items:center}
+  .brand b{display:flex; align-items:center; gap:10px; font-size:15px; letter-spacing:.1px; font-weight:750}
+  .brand b:before{
+    content:"S"; width:31px; height:31px; display:grid; place-items:center; border-radius:10px;
+    color:#fff; font-size:16px; font-weight:800; background:linear-gradient(145deg,#6c82ec,#425bd0);
+    box-shadow:0 5px 12px rgba(73,102,216,.25)
+  }
+  .brand span{font-size:12px; color:#8a93a4}
+  .steps{gap:6px}
+  .step{padding:6px 12px; border:1px solid transparent; border-radius:10px; color:#7d8798; font-size:11.5px}
+  .step.on{background:#f0f3ff; border-color:#e2e8ff; color:#405aca}
+  .step i{width:18px; height:18px; border:0; background:#edf0f5; color:#7a8497; font-size:10px; font-weight:700}
+  .step.on i{background:#526bd8; color:#fff}
+  .badge-llm{padding:5px 10px; border-color:#e5e9f0; color:#758096; background:#fafbfc; font-size:10.5px}
+  .badge-llm.on{border-color:#dbe3ff; background:#f2f5ff; color:#425dcc}
+  main{grid-template-columns:minmax(0,1fr); min-height:0}
+  aside{
+    position:relative; background:linear-gradient(165deg,#172238 0%,#111a2c 100%); color:#eef2fa;
+    border-right:0; padding:22px 18px 20px; gap:23px; box-shadow:8px 0 28px rgba(26,39,70,.055)
+  }
+  aside .section{gap:9px}
+  aside .section h3{margin:0 0 2px; color:#aab5ca; font-size:10.5px; letter-spacing:.9px; font-weight:700}
+  aside .section h3:before{width:5px; height:14px; opacity:1; background:#7d91f1; border-radius:4px}
+  aside textarea{
+    min-height:190px; color:#e6ebf4; background:#0e1728; border:1px solid #2b3850;
+    border-radius:12px; padding:12px; font-size:11.5px; line-height:1.65; box-shadow:inset 0 1px 4px rgba(0,0,0,.13)
+  }
+  aside textarea::placeholder{color:#748098}
+  aside textarea:focus,aside input:focus,aside select:focus{outline:3px solid rgba(111,132,232,.2); border-color:#7186e8}
+  aside .row{gap:10px}
+  aside .row > label{color:#b9c3d5; font-size:11.5px}
+  aside select,aside input[type=number],aside input[type=text]{
+    color:#e8edf7; background:#1b2940; border:1px solid #35435a; border-radius:9px; height:34px
+  }
+  aside select{min-width:145px}
+  aside button{height:36px; border-radius:10px; font-size:11.5px}
+  aside button.primary{background:linear-gradient(135deg,#6479e6,#4c63d3); border-color:#6479e6; box-shadow:0 6px 14px rgba(67,91,202,.24)}
+  aside button.primary:hover{background:linear-gradient(135deg,#7186ef,#526be0); border-color:#7186ef; transform:translateY(-1px)}
+  aside button.ghost{color:#aeb9cc; border-color:#35435a}
+  aside button.ghost:hover{color:#fff; background:#24324a; border-color:#52617a}
+  aside #rePlanBtn{width:100%; border:1px solid #41527a; color:#dfe6ff; background:#26365c; font-weight:650}
+  aside #rePlanBtn:hover:not(:disabled){background:#304475; border-color:#6579c4}
+  aside #rePlanBtn:disabled{background:#202b3d; color:#68758b; border-color:#2b3749}
+  aside .hint{color:#8794aa; font-size:10.5px}
+  aside .chips{gap:7px}
+  aside .chip{padding:5px 10px; background:#1a2940; border-color:#35435a; color:#c9d2e2; font-size:10.5px}
+  aside .chip:hover{border-color:#8294eb; color:#fff}
+  aside .chip.on{background:#293963; border-color:#687ddc; color:#e8ecff}
+  aside .history{font-size:10.5px; color:#b6c0d1; padding:11px 12px; border:1px solid #2d3a51; border-radius:11px; background:rgba(9,17,31,.26)}
+  .content{background:var(--bg); grid-template-rows:auto auto minmax(0,1fr) auto}
+  .workflow-config{display:flex;align-items:center;gap:18px;padding:12px 24px;border-bottom:1px solid #e5e9f1;background:#fff}
+  .workflow-config-title{flex:none;min-width:112px}
+  .workflow-config-title b{display:block;color:#34415b;font-size:11.5px}
+  .workflow-config-title span{display:block;margin-top:2px;color:#929bad;font-size:9px;white-space:nowrap}
+  .workflow-config-grid{display:grid;grid-template-columns:repeat(4,minmax(104px,1fr));gap:10px 14px;flex:1;min-width:0}
+  .workflow-config-field{display:flex;align-items:center;gap:8px;min-width:0}
+  .workflow-config-field label{flex:none;color:#7b879b;font-size:10px;white-space:nowrap}
+  .workflow-config-field select,.workflow-config-field input{width:100%;min-width:0;flex:1;height:32px;background:#fafbfe;border-color:#e3e8f0;color:#34415b;font-size:10.5px;padding:0 6px}
+  .workflow-config-action{display:flex;align-items:center;gap:10px;flex:none}
+  .workflow-config-action .hint{max-width:180px}
+  .workflow-config-action button{white-space:nowrap;height:32px;font-size:10px}
+  /* 中等宽度：字段竖排（标签在上），提示收起，避免标签与控件重叠 */
+  .workflow-config-field{align-items:flex-start;flex-direction:column;gap:4px}
+  .workflow-config-field select,.workflow-config-field input{height:30px;width:100%}
+  .workflow-config-action .hint{display:none}
+  @media (min-width:1600px){
+    .workflow-config-field{align-items:center;flex-direction:row}
+    .workflow-config-action .hint{display:block}
+  }
+  .verification-card{width:min(100%,1020px);margin:0 auto 18px}
+  .tabs{gap:6px; padding:13px 24px 0; background:transparent; border-bottom:1px solid #e5e9f1}
+  .tab{position:relative; padding:10px 15px 12px; border-radius:10px 10px 0 0; color:#798397; font-size:12.5px; transition:color .15s,background .15s}
+  .tab:hover{color:#34425f; background:rgba(255,255,255,.55)}
+  .tab.on{color:#405aca; border-bottom-color:#526bd8; background:transparent}
+  .tab .n{padding:2px 7px; border-radius:999px; background:#eceff5; color:#7b8598; font-size:10px}
+  .tab.on .n{background:#e9edff; color:#526bd8}
+  .panes{padding:22px 26px 26px; scrollbar-color:#c9cfdb transparent; scrollbar-width:thin}
+  .card{
+    padding:19px 21px; margin-bottom:15px; border:1px solid #e6eaf1; border-radius:15px;
+    background:rgba(255,255,255,.96); box-shadow:0 4px 16px rgba(31,45,76,.035);
+    transition:box-shadow .18s,border-color .18s
+  }
+  .card:hover{border-color:#dce2ed; box-shadow:0 7px 23px rgba(31,45,76,.055)}
+  .card > h4{margin-bottom:14px; gap:9px; align-items:center; font-size:13px; font-weight:700; letter-spacing:.05px}
+  .card > h4 .sub{color:#929bad; font-size:10.5px}
+  table{font-size:11.5px; border-collapse:separate; border-spacing:0}
+  th,td{padding:10px 11px; border-bottom:1px solid #edf0f5; vertical-align:middle}
+  th{background:#f8f9fc; color:#737f94; font-size:10.5px; letter-spacing:.15px; font-weight:700}
+  thead tr:first-child th:first-child{border-top-left-radius:9px}
+  thead tr:first-child th:last-child{border-top-right-radius:9px}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr:hover td{background:#f8faff}
+  td .dim{font-size:10.5px; color:#8792a5}
+  .tag{padding:2px 8px; font-size:9.5px; font-weight:650; letter-spacing:.1px; background:#f0f2f7; color:#68758b}
+  .tag.p0{background:#fff0f0; color:#bd4651}.tag.p1{background:#fff6e7; color:#a56b13}.tag.p2{background:#f0f2f7; color:#717b8d}
+  .tag.ready{background:#e7f5ef;color:#148069}.tag.pending{background:#fff4df;color:#a96e12}.tag.blocked{background:#fff0f0;color:#bd4651}
+  .src{font-size:10px; color:#8390a5}
+  .kdot{width:8px;height:8px;border-radius:3px}
+  .stats{gap:11px}
+  .stat{position:relative; overflow:hidden; padding:13px 15px; border:1px solid #edf0f5; border-radius:11px; background:linear-gradient(145deg,#fbfcfe,#f7f8fb)}
+  .stat:before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:0 4px 4px 0;background:#8798e8}
+  .stat b{font-size:21px; letter-spacing:-.3px; color:#24324d}
+  .stat span{color:#8490a4; font-size:10px}
+  .banner{padding:11px 14px; border:1px solid transparent; border-radius:11px; font-size:11.5px}
+  .banner.info{background:#f0f3ff;border-color:#e3e9ff;color:#445bb5}
+  .banner.warn{background:#fff8e9;border-color:#f8ebca;color:#9b6817}
+  .banner.err{background:#fff1f1;border-color:#f6dddd;color:#aa3944}
+  .hint{font-size:10.5px; color:#8a94a6}
+  .kv{grid-template-columns:82px minmax(0,1fr); font-size:11.5px; gap:7px 13px}
+  .kv .k{color:#8893a6;font-size:10.5px}
+  .empty:not(.welcome){padding:28px;border:1px solid #e6eaf1;border-radius:13px;background:rgba(255,255,255,.72);color:#7e899d}
+  .empty:not(.welcome):before{content:none}
+  .welcome{
+    position:relative; display:block; width:min(100%,1020px); margin:18px auto;
+    min-height:0; padding:34px 42px 30px; overflow:hidden; text-align:left; color:var(--ink);
+    border:1px solid #e4e9f3; border-radius:18px;
+    background:linear-gradient(112deg,#fff 0%,#fff 46%,#f6f8ff 100%);
+    box-shadow:0 12px 30px rgba(34,51,90,.055)
+  }
+  .welcome:before{content:none}
+  .welcome:after{content:"";position:absolute;right:-110px;top:-170px;width:330px;height:330px;border-radius:50%;background:radial-gradient(circle,rgba(111,132,232,.09),rgba(111,132,232,0) 68%);pointer-events:none}
+  .welcome-copy,.welcome-flow{position:relative;z-index:1}
+  .welcome-copy{max-width:780px}
+  .welcome-kicker{display:flex;align-items:center;gap:8px;color:#7c88a3;font-size:9.5px;font-weight:750;letter-spacing:1.2px}
+  .welcome-kicker i,.welcome-foot i{width:7px;height:7px;border-radius:50%;background:#6e82e7;box-shadow:0 0 0 4px #edf0ff}
+  .welcome-copy h2{margin:17px 0 11px;color:#1b2740;font-size:27px;line-height:1.3;letter-spacing:-.6px;font-weight:750}
+  .welcome-copy p{max-width:510px;margin:0;color:#778398;font-size:12px;line-height:1.85}
+  .welcome-pills{display:flex;flex-wrap:wrap;gap:7px;margin-top:21px}
+  .welcome-pills span{padding:5px 9px;border:1px solid #e7eaf2;border-radius:7px;background:rgba(255,255,255,.8);color:#727e94;font-size:9.5px}
+  .welcome-flow{max-width:760px;margin-top:25px;padding-top:17px;border-top:1px solid #e9edf5;background:transparent}
+  .welcome-flow-title{display:flex;align-items:center;gap:9px;margin:0 0 10px;color:#34425e;font-size:10px}
+  .welcome-flow-title:before{content:"";width:3px;height:12px;border-radius:3px;background:#657be0}
+  .welcome-flow-title span{margin-left:auto;color:#929caf;font-size:9px;font-weight:500}
+  .welcome-step{position:relative;display:grid;grid-template-columns:25px minmax(0,1fr);grid-template-rows:auto auto;align-items:center;column-gap:12px;row-gap:3px;min-height:54px;padding:5px 0 7px;border:0;border-radius:0;background:transparent}
+  .welcome-number{position:relative;z-index:1;grid-column:1;grid-row:1 / span 2;display:grid;place-items:center;align-self:start;flex:none;width:25px;height:25px;border:1px solid #dfe5fb;border-radius:50%;background:#f2f4ff;color:#5068d3;font-size:8.5px;font-weight:750}
+  .welcome-step-copy{grid-column:2;grid-row:1;display:flex;flex:1;flex-direction:column;align-items:flex-start;gap:1px}
+  .welcome-step-copy b{color:#34415b;font-size:10px}
+  .welcome-step-copy small{color:#929bad;font-size:9px}
+  .welcome-arrow{grid-column:2;grid-row:2;justify-self:start;margin:1px 0 0;padding:2px 7px;border-radius:6px;background:#f6f7fb;color:#778399;font-size:8.5px}
+  .welcome-step.final .welcome-number{border-color:#ccebe2;background:#eef9f5;color:#168477}
+  .welcome-step.final .welcome-arrow{background:#eaf7f2;color:#168477}
+  .welcome-connector{height:9px;margin-left:12px;border-left:1px solid #dbe1ef}
+  .welcome-foot{display:flex;align-items:center;gap:8px;margin:12px 0 0 2px;color:#8792a6;font-size:9px}
+  .welcome-foot i{width:6px;height:6px;box-shadow:none;background:#20a184}
+  #pane-spec:has(#specEmpty:not([style])){display:block;min-height:100%}
+  .spec-entry{width:min(100%,1020px);margin:0 auto 14px;padding:16px 20px 14px}
+  .spec-entry-head,.spec-entry-foot{display:flex;align-items:center;justify-content:space-between;gap:16px}
+  .spec-entry-title{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .spec-entry-title b{font-size:12px;color:#33415c}
+  .spec-entry-title span,.spec-entry-foot .hint{color:#8792a6;font-size:9.5px}
+  .spec-entry .chips{justify-content:flex-end}
+  .spec-entry .chip{padding:4px 9px;border-color:#e3e8f2;background:#f8f9fc;color:#65728a;font-size:9.5px}
+  .spec-entry .chip:hover,.spec-entry .chip.on{border-color:#cbd5fa;background:#f0f3ff;color:#4c63d0}
+  .spec-entry textarea{display:block;width:100%;min-height:88px;height:88px;margin:12px 0 9px;resize:vertical;padding:10px 12px;border:1px solid #e2e7f0;border-radius:10px;background:#fbfcfe;color:#34415b;font:11px/1.6 var(--mono)}
+  .spec-entry textarea::placeholder{color:#a0a9b9}
+  .spec-entry textarea:focus{outline:3px solid rgba(73,102,216,.1);border-color:#9aa9ec}
+  .spec-entry-foot{min-height:31px}
+  .spec-entry-actions{display:flex;align-items:center;gap:7px}
+  .spec-entry-actions button{height:30px;padding:5px 11px;font-size:10.5px}
+  .dagwrap{border:1px solid #e7ebf2; border-radius:12px; box-shadow:inset 0 1px 4px rgba(27,41,68,.025)}
+  .node rect{filter:drop-shadow(0 2px 2px rgba(30,45,75,.035))}
+  .node:hover rect{filter:drop-shadow(0 4px 6px rgba(30,45,75,.13))}
+  .lane{grid-template-columns:88px minmax(0,1fr); gap:14px; padding:14px 0; border-color:#edf0f5}
+  .lane-id{font-size:10px;color:#8a94a6}.lane-id b{font-size:12px;color:#34425e}
+  .tchip{padding:6px 10px;border-color:#e6eaf1;border-radius:8px;background:#fbfcfe;font-size:10.5px;box-shadow:0 1px 2px rgba(20,34,60,.025)}
+  .tchip.crit{border-color:#f1d5d5;background:#fff6f5}
+  .legend{gap:12px;color:#8490a4;font-size:10px}
+  .logbar{border-top:1px solid #e7ebf2;background:#fff;max-height:170px;box-shadow:0 -4px 16px rgba(31,45,76,.025)}
+  .logbar.collapsed{max-height:39px}
+  .loghead{padding:9px 24px;color:#7c8799;font-size:10.5px}
+  .loghead b{font-size:11.5px;color:#33415c}
+  .logbody{padding:0 24px 10px;font-size:10px}
+  .ev{grid-template-columns:58px 76px minmax(0,1fr);gap:9px}
+  .history div{padding:5px 0;border-bottom:1px solid #2d3a51}
+  button{border-radius:9px;font-size:11px;transition:all .16s ease}
+  button:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 10px rgba(30,45,75,.08)}
+  button.ghost{height:auto;min-height:28px;padding:4px 8px}
+  select,input[type=number],input[type=text]{border-color:#e1e6ef;border-radius:8px}
+  .impact-direct td{background:#ecf8f5!important}
+  .impact-downstream td{background:#f4f0ff!important}
+  @media(max-width:1050px){
+    main{grid-template-columns:minmax(0,1fr)}
+    .panes{padding:18px}
+    header{padding:0 18px;gap:12px}
+    .step{padding:5px 8px}
+  }
+  @media(max-width:760px){
+    html,body{height:auto;min-height:100%}
+    body{height:auto;min-height:100vh;overflow:auto;grid-template-rows:auto auto}
+    header{height:auto;min-height:62px;flex-wrap:wrap;padding:12px 16px}
+    .brand span{display:none}.steps{margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
+    main{grid-template-columns:1fr;min-height:calc(100vh - 62px)}
+    .content{min-height:70vh;grid-template-rows:auto auto minmax(0,1fr) auto}
+    .workflow-config{align-items:stretch;flex-direction:column;gap:10px;padding:12px}
+    .workflow-config-title{display:flex;align-items:baseline;gap:9px}
+    .workflow-config-title span{margin-top:0}
+    .workflow-config-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+    .workflow-config-field{align-items:flex-start;flex-direction:column;gap:4px}
+    .workflow-config-field select,.workflow-config-field input{height:34px}
+    .workflow-config-action{justify-content:space-between}
+    .workflow-config-action .hint{max-width:none}
+    .tabs{padding:8px 12px 0;overflow-x:auto}
+    .tab{white-space:nowrap;padding:8px 10px}
+    .panes{padding:13px}
+    .card{padding:15px;margin-bottom:12px}
+    table{display:block;overflow-x:auto;white-space:nowrap}
+    .welcome{width:100%;margin:8px auto;padding:25px 22px}
+    .welcome-copy h2{font-size:23px}
+    .welcome-flow{margin-top:20px}
+    .welcome-step-copy{flex-direction:column;gap:1px}
+    .spec-entry{padding:14px}
+    .spec-entry-head{align-items:flex-start;flex-direction:column;gap:8px}
+    .spec-entry .chips{justify-content:flex-start}
+    .spec-entry-foot{align-items:flex-start;flex-direction:column;gap:8px}
+    .spec-entry-actions{width:100%}.spec-entry-actions .primary{flex:1}
+  }
+  /* Larger, calmer type scale and clearer spacing */
+  header{height:70px;gap:24px}
+  .brand b{font-size:16px}.brand span{font-size:13px}
+  .steps{gap:8px}.step{font-size:12.5px;padding:7px 12px}.step i{width:20px;height:20px;font-size:11px}
+  .badge-llm{font-size:11.5px;padding:6px 11px}
+  .workflow-config{gap:20px;padding:15px 28px}
+  .workflow-config-title{min-width:138px}
+  .workflow-config-title b{font-size:13px}
+  .workflow-config-title span{font-size:11px;line-height:1.45}
+  .workflow-config-grid{gap:13px}
+  .workflow-config-field{gap:9px}
+  .workflow-config-field label{font-size:11.5px}
+  .workflow-config-field select,.workflow-config-field input{height:38px;font-size:12.5px;padding:6px 10px}
+  .workflow-config-action .hint{max-width:210px;font-size:11px;line-height:1.45}
+  .workflow-config-action button{height:38px;padding:7px 14px;font-size:11.5px}
+  .tabs{gap:8px;padding:15px 30px 0}
+  .tab{padding:12px 17px 14px;font-size:14px}
+  .tab .n{font-size:11px;padding:3px 8px}
+  .panes{padding:26px 30px 30px}
+  .card{padding:21px 24px;margin-bottom:18px}
+  .card > h4{font-size:15px;margin-bottom:16px;gap:10px}
+  .card > h4 .sub{font-size:12px}
+  table{font-size:13px}
+  th,td{padding:12px 13px}
+  th{font-size:12px}
+  td .dim{font-size:11.5px}
+  .tag{font-size:10.5px;padding:3px 9px}
+  .src{font-size:11px}
+  .stat{padding:15px 17px}
+  .stat b{font-size:24px}
+  .stat span{font-size:12px}
+  .banner{font-size:13px;padding:13px 16px}
+  .hint{font-size:11.5px;line-height:1.6}
+  .kv{font-size:13px;gap:8px 14px}
+  .kv .k{font-size:12px}
+  .welcome{padding:38px 46px 34px}
+  .welcome-kicker{font-size:11px}
+  .welcome-copy h2{font-size:31px;line-height:1.34;margin:19px 0 13px}
+  .welcome-copy p{font-size:14px;line-height:1.85;max-width:650px}
+  .welcome-pills{gap:9px;margin-top:23px}
+  .welcome-pills span{font-size:11px;padding:6px 10px}
+  .welcome-flow{margin-top:28px;padding-top:20px}
+  .welcome-flow-title{font-size:12px;margin-bottom:13px}
+  .welcome-flow-title span{font-size:11px}
+  .welcome-step{min-height:62px;grid-template-columns:31px minmax(0,1fr);column-gap:14px;row-gap:4px}
+  .welcome-number{width:30px;height:30px;font-size:10px}
+  .welcome-step-copy b{font-size:13px}
+  .welcome-step-copy small{font-size:11.5px}
+  .welcome-arrow{font-size:10.5px;padding:4px 9px}
+  .welcome-connector{height:11px;margin-left:14px}
+  .welcome-foot{font-size:11px;margin-top:15px}
+  .spec-entry{padding:19px 24px 17px;margin-bottom:17px}
+  .spec-entry-title b{font-size:14px}
+  .spec-entry-title span,.spec-entry-foot .hint{font-size:11.5px}
+  .spec-entry .chip{font-size:11px;padding:5px 10px}
+  .spec-entry textarea{min-height:190px;height:190px;font-size:13px;line-height:1.65;margin:14px 0 11px;padding:12px 14px}
+  .spec-entry-actions{gap:9px}
+  .spec-entry-actions button{height:36px;padding:7px 14px;font-size:12px}
+  .verification-card{padding:20px 24px}
+  .history{font-size:12px;gap:7px}
+  .history div{padding:7px 0}
+  .empty:not(.welcome){font-size:14px;padding:32px}
+  .lane{gap:16px;padding:16px 0}
+  .lane-id{font-size:11px}.lane-id b{font-size:13px}
+  .tchip{font-size:12px;padding:7px 11px}
+  .legend{font-size:11px;gap:14px}
+  .logbar{max-height:190px}.logbar.collapsed{max-height:42px}
+  .loghead{font-size:12px;padding:10px 28px}.loghead b{font-size:13px}
+  .logbody{font-size:11.5px;padding:0 28px 12px}
+  .ev{grid-template-columns:64px 82px minmax(0,1fr);gap:10px}
+  button{font-size:12px}
+  @media(max-width:1120px){
+    .workflow-config{align-items:flex-start;flex-wrap:wrap}
+    .workflow-config-title{width:100%;display:flex;align-items:baseline;gap:10px}
+    .workflow-config-title span{margin-top:0}
+    .workflow-config-grid{flex:1 1 100%}
+    .workflow-config-action{width:100%;justify-content:space-between}
+  }
+  @media(max-width:760px){
+    header{height:auto;min-height:66px}
+    .brand b{font-size:15px}.brand span{display:none}
+    .step{font-size:11.5px;padding:6px 8px}
+    .workflow-config{padding:13px}
+    .workflow-config-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .workflow-config-field label{font-size:11px}
+    .workflow-config-field select,.workflow-config-field input{height:38px;font-size:12px}
+    .workflow-config-action{align-items:flex-start;flex-direction:column}
+    .workflow-config-action button{width:100%}
+    .tabs{padding:8px 12px 0}.tab{font-size:12.5px;padding:9px 11px}
+    .panes{padding:14px}
+    .card{padding:16px;margin-bottom:13px}
+    .welcome{padding:28px 23px}
+    .welcome-copy h2{font-size:25px}
+    .welcome-copy p{font-size:13px}
+    .welcome-step{min-height:60px}
+    .spec-entry{padding:15px}
+    .spec-entry textarea{height:100px;min-height:100px;font-size:12px}
+    .spec-entry-head{align-items:flex-start;flex-direction:column;gap:9px}
+    .spec-entry .chips{justify-content:flex-start}
+    .spec-entry-foot{align-items:flex-start;flex-direction:column;gap:9px}
+    .spec-entry-actions{width:100%}.spec-entry-actions .primary{flex:1}
+    table{font-size:12px}
+    th,td{padding:10px}
+    .loghead{padding:9px 14px}
+  }
+  /* Reference-scale typography: readable at normal desktop zoom */
+  body{font-size:15px;line-height:1.65}
+  header{height:74px}
+  .brand b{font-size:18px}.brand span{font-size:14px}
+  .steps{gap:10px}.step{font-size:14px;padding:8px 13px}.step i{width:22px;height:22px;font-size:12px}
+  .badge-llm{font-size:13px;padding:7px 12px}
+  .workflow-config{gap:22px;padding:17px 30px}
+  .workflow-config-title{min-width:150px}
+  .workflow-config-title b{font-size:15px}
+  .workflow-config-title span{font-size:12.5px}
+  .workflow-config-grid{gap:15px}
+  .workflow-config-field{gap:10px}
+  .workflow-config-field label{font-size:13px}
+  .workflow-config-field select,.workflow-config-field input{height:42px;font-size:14px;padding:7px 11px}
+  .workflow-config-action .hint{max-width:230px;font-size:12.5px}
+  .workflow-config-action button{height:42px;padding:8px 15px;font-size:13px}
+  .tabs{padding-top:17px}
+  .tab{font-size:15.5px;padding:13px 19px 15px}
+  .tab .n{font-size:12px;padding:3px 9px}
+  .panes{padding:28px 32px 32px}
+  .card{padding:23px 26px;margin-bottom:20px}
+  .card > h4{font-size:17px;margin-bottom:17px}
+  .card > h4 .sub{font-size:13.5px}
+  table{font-size:14px}
+  th,td{padding:13px 14px}
+  th{font-size:13px}
+  td .dim{font-size:12.5px}
+  .tag{font-size:12px;padding:3px 9px}
+  .src{font-size:12px}
+  .stat{padding:16px 18px}
+  .stat b{font-size:27px}
+  .stat span{font-size:13.5px}
+  .banner{font-size:14.5px;padding:14px 17px}
+  .hint{font-size:13px;line-height:1.65}
+  ul.plain,ul.rationale{font-size:14px;line-height:1.7}
+  .kv{font-size:14px;gap:9px 15px}
+  .kv .k{font-size:13px}
+  .welcome{padding:40px 48px 36px}
+  .welcome-kicker{font-size:12px}
+  .welcome-copy h2{font-size:36px;line-height:1.34;margin:21px 0 15px}
+  .welcome-copy p{font-size:16px;line-height:1.8;max-width:720px}
+  .welcome-pills{gap:10px;margin-top:25px}
+  .welcome-pills span{font-size:12.5px;padding:7px 11px}
+  .welcome-flow{margin-top:30px;padding-top:22px}
+  .welcome-flow-title{font-size:14px;margin-bottom:15px}
+  .welcome-flow-title span{font-size:12.5px}
+  .welcome-step{min-height:70px;grid-template-columns:35px minmax(0,1fr);column-gap:15px;row-gap:5px}
+  .welcome-number{width:34px;height:34px;font-size:11.5px}
+  .welcome-step-copy b{font-size:15px}
+  .welcome-step-copy small{font-size:13.5px}
+  .welcome-arrow{font-size:12px;padding:5px 10px}
+  .welcome-connector{height:12px;margin-left:16px}
+  .welcome-foot{font-size:13px;margin-top:17px}
+  .spec-entry{padding:21px 26px 19px;margin-bottom:19px}
+  .spec-entry-title b{font-size:16px}
+  .spec-entry-title span,.spec-entry-foot .hint{font-size:13px}
+  .spec-entry .chip{font-size:12.5px;padding:6px 11px}
+  .spec-entry textarea{min-height:120px;height:120px;font-size:15px;line-height:1.65;margin:15px 0 12px;padding:13px 15px}
+  .spec-entry-actions{gap:10px}
+  .spec-entry-actions button{height:40px;padding:8px 15px;font-size:14px}
+  .history{font-size:13.5px;gap:8px}
+  .history div{padding:8px 0}
+  .empty:not(.welcome){font-size:15px;padding:34px}
+  .lane{gap:17px;padding:17px 0}
+  .lane-id{font-size:12.5px}.lane-id b{font-size:14.5px}
+  .tchip{font-size:13.5px;padding:8px 12px}
+  .legend{font-size:12.5px;gap:15px}
+  .logbar{max-height:210px}.logbar.collapsed{max-height:44px}
+  .loghead{font-size:13.5px;padding:11px 30px}.loghead b{font-size:14.5px}
+  .logbody{font-size:13px;padding:0 30px 13px}
+  .ev{grid-template-columns:70px 90px minmax(0,1fr);gap:11px}
+  .lane-body[style*="font-size"]{font-size:13px!important}
+  button{font-size:13.5px}
+  @media(max-width:760px){
+    header{height:auto;min-height:68px}
+    .brand b{font-size:16px}.brand span{display:none}
+    .step{font-size:12.5px;padding:7px 9px}
+    .workflow-config{padding:14px}
+    .workflow-config-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .workflow-config-field label{font-size:12.5px}
+    .workflow-config-field select,.workflow-config-field input{height:40px;font-size:13.5px}
+    .workflow-config-action button{font-size:13.5px}
+    .tabs{padding:9px 12px 0}.tab{font-size:13.5px;padding:10px 12px}
+    .panes{padding:15px}
+    .card{padding:17px;margin-bottom:14px}
+    .card > h4{font-size:15.5px}
+    .welcome{padding:29px 24px}
+    .welcome-copy h2{font-size:29px}
+    .welcome-copy p{font-size:14.5px}
+    .welcome-step-copy b{font-size:14px}
+    .welcome-step-copy small{font-size:12.5px}
+    .welcome-arrow{font-size:11px}
+    .spec-entry{padding:16px}
+    .spec-entry textarea{height:110px;min-height:110px;font-size:13.5px}
+    .spec-entry-title b{font-size:15px}
+    .spec-entry-title span,.spec-entry-foot .hint{font-size:12px}
+    .spec-entry .chip{font-size:11.5px}
+    table{font-size:13px}
+    th,td{padding:11px}
+    .loghead{padding:10px 15px}
+  }
+  /* Project workspace */
+  .workspace{display:grid;grid-template-columns:280px minmax(0,1fr);gap:18px;min-height:calc(100vh - 270px);max-width:1500px;margin:0 auto}
+  .workspace-side,.workspace-main{min-width:0;border:1px solid #e5eaf2;border-radius:16px;background:#fff;box-shadow:0 6px 22px rgba(31,45,76,.045)}
+  .workspace-side{padding:18px;display:flex;flex-direction:column;gap:14px}
+  .workspace-title{display:flex;align-items:center;justify-content:space-between;color:#34415c;font-weight:750;font-size:15px}
+  .workspace-title small{display:block;color:#8994a7;font-size:11px;font-weight:450}
+  .project-create{display:flex;gap:7px}.project-create input{min-width:0;flex:1;height:38px;padding:7px 10px;border:1px solid #e1e6ef;border-radius:9px;font:inherit}
+  .project-list{display:flex;flex-direction:column;gap:6px;overflow:auto;max-height:190px}
+  .project-item{width:100%;height:auto;text-align:left;padding:10px 11px;border:1px solid transparent;background:#fff;border-radius:10px;color:#45516a}
+  .project-item:hover{background:#f7f8fc;border-color:#edf0f6}.project-item.on{background:#eef2ff;border-color:#dfe5ff;color:#405aca}
+  .project-item b{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.project-item small{color:#929caf;font-size:10.5px}
+  .file-head{display:flex;align-items:center;justify-content:space-between;margin-top:5px;padding-top:14px;border-top:1px solid #edf0f5;color:#53617a;font-weight:700;font-size:12px}
+  .file-list{display:flex;flex-direction:column;gap:4px;overflow:auto;max-height:30vh}
+  .file-item{display:flex;align-items:center;gap:8px;min-width:0;padding:7px 8px;border-radius:8px;color:#58657c;font-size:12px}
+  .file-item:hover{background:#f7f8fb}.file-item input{accent-color:#526bd8}.file-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .file-item button{height:26px;padding:2px 7px;font-size:10px}
+  .file-add{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.file-add input[type=text]{min-width:0;flex:1;height:34px}
+  .workspace-note{padding:10px 11px;border-radius:9px;background:#f6f8fc;color:#77849a;font-size:11px;line-height:1.6}
+  .workspace-main{display:grid;grid-template-rows:auto minmax(200px,1fr) auto;overflow:hidden;min-height:600px}
+  .workspace-project-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:17px 20px;border-bottom:1px solid #edf0f5}
+  .workspace-project-head h2{margin:0;color:#26334e;font-size:18px}.workspace-project-head p{margin:3px 0 0;color:#8a95a8;font-size:11.5px}
+  .context-count{flex:none;padding:6px 10px;border-radius:99px;background:#f1f3fa;color:#6f7b92;font-size:11px}
+  .workspace-chat{overflow:auto;padding:20px;display:flex;flex-direction:column;gap:13px;background:linear-gradient(#fbfcfe,#fff)}
+  .chat-welcome{margin:auto;max-width:520px;text-align:center;color:#8a95a8}.chat-welcome b{display:block;margin-bottom:7px;color:#44516b;font-size:17px}.chat-welcome span{font-size:12px;line-height:1.7}
+  .chat-msg{max-width:min(82%,820px);padding:12px 15px;border-radius:13px;border:1px solid #e8ecf3;background:#fff;color:#39465f;box-shadow:0 2px 8px rgba(28,42,69,.035);white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.75}
+  .chat-msg.user{align-self:flex-end;background:#eef2ff;border-color:#e0e6ff;color:#334579}.chat-msg.assistant{align-self:flex-start}
+  .chat-msg small{display:block;margin-bottom:4px;color:#929caf;font-size:10px}
+  .chat-compose{padding:14px 16px;border-top:1px solid #edf0f5;background:#fff}
+  .chat-compose textarea{min-height:82px;max-height:180px;resize:vertical;border:1px solid #e1e6ef;background:#fcfdff;font:13px/1.65 var(--mono)}
+  .chat-compose-foot{display:flex;align-items:center;gap:10px;margin-top:8px}.chat-compose-foot .hint{flex:1}
+  .file-preview{display:none;position:fixed;inset:0;z-index:10;background:rgba(18,27,45,.35);padding:5vh 7vw}
+  .file-preview.on{display:flex}.file-preview-card{width:100%;max-height:90vh;display:grid;grid-template-rows:auto 1fr;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 20px 60px #18243d33}
+  .file-preview-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid #edf0f5;font-weight:700;color:#34415c}
+  .file-preview pre{overflow:auto;margin:0;padding:20px;font:12px/1.7 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+  @media(max-width:850px){.workspace{grid-template-columns:1fr}.workspace-side{gap:10px}.project-list{max-height:130px}.file-list{max-height:180px}.workspace-main{min-height:65vh}}
+  @media(max-width:760px){.workspace{gap:12px}.workspace-side{padding:14px}.workspace-project-head{padding:14px}.workspace-chat{padding:14px}.chat-msg{max-width:94%}.file-preview{padding:2vh 3vw}}
+  /* Codex-like persistent project navigation */
+  main{grid-template-columns:258px minmax(0,1fr)}
+  .app-sidebar{min-height:0;overflow:auto;display:flex;flex-direction:column;gap:9px;padding:16px 12px;background:#f0f1f4;border-right:1px solid #e1e3e8;color:#303746}
+  .sidebar-new{display:flex;align-items:center;gap:10px;width:100%;height:42px;padding:0 13px;border:1px solid #e0e3e9;border-radius:11px;background:#fff;color:#303746;text-align:left;font-size:13px;font-weight:650;box-shadow:0 1px 2px #1d2b4210}
+  .sidebar-new:hover{background:#fafbfc;border-color:#cfd5df}
+  .sidebar-new-icon{display:grid;place-items:center;width:22px;height:22px;border-radius:7px;background:#eef1ff;color:#526bd8;font-size:17px;line-height:1}
+  .sidebar-project-create{display:none;gap:6px;padding:3px 1px}.sidebar-project-create.on{display:flex}
+  .sidebar-project-create input{min-width:0;flex:1;height:34px;padding:6px 9px;border:1px solid #dce1e9;border-radius:8px;background:#fff;font:12px inherit}
+  .sidebar-project-create button{height:34px;padding:5px 9px}
+  .sidebar-link{width:100%;height:38px;padding:0 12px;text-align:left;border:0;background:transparent;color:#596273;border-radius:9px;font-size:12.5px}
+  .sidebar-link:hover,.sidebar-link.on{background:#e4e6eb;color:#293247}
+  .sidebar-section{display:flex;align-items:center;justify-content:space-between;margin:15px 7px 2px;color:#858c99;font-size:11px;font-weight:700;letter-spacing:.3px}
+  .project-list{max-height:none;gap:3px}
+  .project-item{position:relative;height:auto;min-height:38px;padding:8px 10px;border:0;background:transparent;border-radius:8px;color:#515a6a}
+  .project-item b{font-size:12.5px;font-weight:550}.project-item small{display:none}
+  .project-item:hover{background:#e8eaf0;border-color:transparent}.project-item.on{background:#e1e4eb;border-color:transparent;color:#293247}
+  .sidebar-empty{padding:7px 10px;color:#999fac;font-size:11px;line-height:1.5}
+  .sidebar-footer{margin-top:auto;padding:12px 8px 2px;border-top:1px solid #dfe2e8;color:#9399a5;font-size:10.5px}
+  .content:has(#pane-workspace.on){grid-template-rows:minmax(0,1fr) auto}
+  .content:has(#pane-workspace.on)>.workflow-config,.content:has(#pane-workspace.on)>.tabs{display:none}
+  .content:has(#pane-workspace.on) .panes{padding:18px 22px}
+  .content:has(#pane-workspace.on) #pane-workspace{min-height:100%}
+  .workspace{display:block;min-height:0;max-width:none;margin:0}
+  .workspace-side{display:none}
+  .workspace-main{grid-template-rows:auto auto minmax(200px,1fr) auto;min-height:calc(100vh - 180px);border:1px solid #e5eaf2}
+  .workspace-files{padding:11px 17px;border-bottom:1px solid #edf0f5;background:#fff}
+  .workspace-files .file-head{margin:0;padding:0 0 8px;border:0}
+  .workspace-files .file-list{max-height:112px;flex-direction:row;flex-wrap:wrap}
+  .workspace-files .file-item{width:auto;max-width:260px;padding:5px 8px;border:1px solid #edf0f5;border-radius:8px;background:#fbfcfe}
+  .workspace-files .file-add{margin-top:7px}
+  .workspace-files .workspace-note{display:none}
+  .workspace-chat{min-height:250px}
+  .tab[data-pane="workspace"]{display:none}
+  @media(max-width:1050px){main{grid-template-columns:230px minmax(0,1fr)}}
+  @media(max-width:760px){
+    main{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+    .app-sidebar{max-height:150px;padding:9px 11px;overflow:auto;display:grid;grid-template-columns:auto auto minmax(120px,1fr);grid-template-rows:auto auto;align-items:center;gap:5px 8px;border-right:0;border-bottom:1px solid #e1e3e8}
+    .sidebar-new{height:36px;padding:0 8px;font-size:11px}.sidebar-link{height:34px;padding:0 8px;font-size:11px}
+    .sidebar-section{grid-column:1;grid-row:2;margin:0 4px}.app-sidebar>.project-list{grid-column:2 / 4;grid-row:2;flex-direction:row;max-height:42px;overflow-x:auto;overflow-y:hidden}
+    .project-item{flex:none;max-width:170px;min-height:32px}.sidebar-footer{display:none}.sidebar-project-create{grid-column:1 / 4}
+    .content:has(#pane-workspace.on) .panes{padding:10px}
+    .workspace-main{min-height:calc(100vh - 280px)}
+    .workspace-files{padding:10px}.workspace-project-head{padding:12px 14px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <b>SE Workflow</b>
+    <span>设计规格 → PM 任务分解 → 执行编排 → 可视化</span>
+  </div>
+  <div class="steps">
+    <div class="step" id="st1"><i>1</i>规格解析</div>
+    <div class="step" id="st2"><i>2</i>任务分解</div>
+    <div class="step" id="st3"><i>3</i>编排可视化</div>
+  </div>
+  <span class="badge-llm" id="llmBadge">LLM 检测中</span>
+</header>
+
+<main>
+  <aside class="app-sidebar">
+    <button class="sidebar-new" id="showCreateProjectBtn"><span class="sidebar-new-icon">＋</span><span>新建项目</span></button>
+    <div class="sidebar-project-create" id="sidebarProjectCreate"><input id="projectName" type="text" placeholder="项目名称"><button class="primary" id="createProjectBtn">创建</button></div>
+    <button class="sidebar-link on" id="workflowNav">▦　SE Workflow 工作流</button>
+    <div class="sidebar-section"><span>项目</span></div>
+    <div class="project-list" id="projectList"><div class="sidebar-empty">正在读取项目…</div></div>
+    <div class="sidebar-footer">SE Workflow · 本地工作区</div>
+  </aside>
+  <div class="content">
+    <div class="workflow-config">
+      <div class="workflow-config-title"><b>工作流配置</b><span>调整分解粒度与任务编排</span></div>
+      <div class="workflow-config-grid">
+        <div class="workflow-config-field"><label for="granularity">分解粒度</label><select id="granularity"><option value="coarse">粗（按模块）</option><option value="medium" selected>中（按需求）</option><option value="fine">细（需求 × 层）</option></select></div>
+        <div class="workflow-config-field"><label for="strategy">编排策略</label><select id="strategy"></select></div>
+        <div class="workflow-config-field"><label for="maxParallel">并行上限</label><input type="number" id="maxParallel" value="3" min="1" max="8"></div>
+        <div class="workflow-config-field"><label for="wipLimit">单角色上限</label><input type="number" id="wipLimit" value="2" min="0" max="8"></div>
+      </div>
+      <div class="workflow-config-action"><span class="hint" id="strategyHint"></span><button class="primary" id="rePlanBtn" disabled>按当前策略重新编排</button></div>
+    </div>
+    <div class="tabs">
+      <div class="tab on" data-pane="spec">规格解析 <span class="n" id="nSpec"></span></div>
+      <div class="tab" data-pane="tasks">任务分解 <span class="n" id="nTask"></span></div>
+      <div class="tab" data-pane="plan">编排与可视化 <span class="n" id="nPlan"></span></div>
+      <div class="tab" data-pane="workspace">项目工作区</div>
+    </div>
+
+    <div class="panes">
+      <div class="pane on" id="pane-spec">
+        <div class="spec-entry card">
+          <div class="spec-entry-head">
+            <div class="spec-entry-title"><b>设计规格输入</b><span>粘贴 Markdown / JSON，或选择内置样例开始解析</span></div>
+            <div class="chips" id="exampleChips"></div>
+          </div>
+          <textarea id="specText" placeholder="# 产品：示例产品&#10;## 项目目标&#10;描述目标用户和要解决的问题&#10;## 功能模块&#10;### 模块名称&#10;- 可独立验收的产品需求"></textarea>
+          <div class="spec-entry-foot">
+            <span class="hint">更换产品只需更换规格文本，无需修改工作流代码。</span>
+            <div class="spec-entry-actions"><button class="ghost" id="clearBtn">清空</button><button class="primary" id="runBtn">解析并分解</button></div>
+          </div>
+        </div>
+        <div class="empty welcome" id="specEmpty">
+          <div class="welcome-copy">
+            <div class="welcome-kicker"><i></i> SE WORKFLOW STUDIO</div>
+            <h2>从设计规格<br>生成开发任务计划</h2>
+            <p>把产品需求转化为可追溯的开发任务、依赖关系和执行批次。选择上方样例，或粘贴你自己的设计规格开始体验。</p>
+            <div class="welcome-pills"><span>Markdown / JSON</span><span>需求来源可追溯</span><span>支持离线演示</span></div>
+          </div>
+          <div class="welcome-flow">
+            <div class="welcome-flow-title"><b>工作流路径</b><span>3 个阶段</span></div>
+            <div class="welcome-step"><span class="welcome-number">01</span><span class="welcome-step-copy"><b>设计规格</b><small>提取需求与约束</small></span><span class="welcome-arrow">结构化需求</span></div>
+            <div class="welcome-connector"></div>
+            <div class="welcome-step"><span class="welcome-number">02</span><span class="welcome-step-copy"><b>PM 任务分解</b><small>形成有出处的开发任务</small></span><span class="welcome-arrow">可审核任务集</span></div>
+            <div class="welcome-connector"></div>
+            <div class="welcome-step final"><span class="welcome-number">03</span><span class="welcome-step-copy"><b>任务编排</b><small>依赖分析与批次规划</small></span><span class="welcome-arrow">依赖图与执行批次</span></div>
+            <div class="welcome-foot"><i></i> 无需配置模型密钥，可直接体验规则模式</div>
+          </div>
+        </div>
+        <div id="specBody" style="display:none"></div>
+        <div class="card verification-card">
+          <h4>通用性验证<span class="sub">使用不同产品规格检验工作流复用能力</span></h4>
+          <div class="history" id="historyBox">还没有运行记录。选择两个不同案例运行后，可在这里对比任务与编排结果。</div>
+        </div>
+      </div>
+
+      <div class="pane" id="pane-tasks">
+        <div class="empty" id="taskEmpty">任务分解结果会显示在这里，可直接改角色、人日、优先级和依赖。</div>
+        <div id="taskBody" style="display:none"></div>
+      </div>
+
+      <div class="pane" id="pane-plan">
+        <div class="empty" id="planEmpty">编排结果（依赖图 + 执行批次 + 状态追踪）会显示在这里。</div>
+        <div id="planBody" style="display:none"></div>
+      </div>
+
+      <div class="pane" id="pane-workspace">
+        <div class="workspace">
+          <section class="workspace-main">
+            <div class="workspace-project-head"><div><h2 id="workspaceProjectName">选择一个项目</h2><p id="workspaceProjectMeta">创建项目后，可在项目内持续对话并管理资料</p></div><span class="context-count" id="contextCount">0 个上下文文件</span></div>
+            <div class="workspace-files">
+            <div class="file-head"><span>项目文件</span><span id="fileCount">0</span></div>
+            <div class="file-add"><input id="fileName" type="text" placeholder="文件名，如 notes.md"><button id="addTextFileBtn">新建文本</button><button id="uploadFileBtn">上传文件</button><input id="filePicker" type="file" hidden multiple></div>
+            <div class="file-list" id="fileList"><div class="hint">先创建或选择一个项目</div></div>
+            <div class="workspace-note">勾选文件后，发送消息时只会把这些文件内容附加给已配置的模型。本地保存的项目不会自动上传。</div>
+            </div>
+            <div class="workspace-chat" id="workspaceChat"><div class="chat-welcome"><b>项目对话</b><span>在这里讨论需求、代码或开发计划。你可以从上方勾选文件，作为本次对话的参考资料。</span></div></div>
+            <div class="chat-compose"><textarea id="chatInput" placeholder="向项目助手提问…（Ctrl / ⌘ + Enter 发送）"></textarea><div class="chat-compose-foot"><span class="hint" id="chatStatus">选择项目后开始对话</span><button class="primary" id="sendChatBtn" disabled>发送</button></div></div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div class="file-preview" id="filePreview"><div class="file-preview-card"><div class="file-preview-head"><span id="previewName">文件</span><button id="closePreviewBtn">关闭</button></div><pre id="previewContent"></pre></div></div>
+    <div class="logbar collapsed" id="logbar">
+      <div class="loghead" id="loghead"><b>事件流</b><span id="logCount">0 条</span><span style="margin-left:auto">点击展开 / 折叠</span></div>
+      <div class="logbody" id="logBody"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const state = {
+  spec: null, tasks: [], plan: null, coverage: null, meta: null,
+  events: [], planDiff: null, history: [],
+  selected: null, impactReqId: null, simIndex: -1, busy: false,
+  projects: [], project: null, selectedContext: new Set(), chatBusy: false,
+};
+
+const KIND_COLOR = {
+  contract:"#7c5cff", backend:"#2f6fed", frontend:"#0f9d8f",
+  data:"#c2761b", test:"#8a6d3b", ops:"#5b6b7d", doc:"#8d93a0",
+};
+const KIND_ZH = {contract:"契约",backend:"后端",frontend:"前端",data:"数据",test:"测试",ops:"基础",doc:"文档"};
+const STATUS_ZH = {ready:"可执行",pending:"待确认",blocked:"被阻塞",done:"已完成"};
+
+/* ---------------- 基础请求 ---------------- */
+/* 后端地址：页面若不在本机 http(s) 下（例如在内置预览面板、file:// 里打开），
+   相对路径会打到面板自己的 origin，必然失败；此时改成绝对地址直连后端。 */
+const API_BASE = (() => {
+  const p = location.protocol;
+  const h = location.hostname;
+  if ((p === "http:" || p === "https:") && (h === "127.0.0.1" || h === "localhost" || h === "[::1]")) return "";
+  return "http://127.0.0.1:8765";
+})();
+
+async function api(path, body) {
+  const opt = body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {};
+  let res;
+  try {
+    res = await fetch(API_BASE + path, opt);
+  } catch (e) {
+    // fetch 抛 TypeError 只有一种原因：压根没连上服务（服务没起 / 正在重启 / 端口不对）
+    const err = new Error("连不上后端 " + (API_BASE || location.origin) + " —— python app.py 可能已停止或正在重启");
+    err.network = true;
+    throw err;
+  }
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* 非 JSON 响应，下面按状态码报错 */ }
+  if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+  return data || {};
+}
+
+/* ---------------- 初始化 ---------------- */
+async function boot(attempt = 0) {
+  try {
+    const cfg = await api("/api/config");
+    logEvent("info", "初始化", "config", "已连接后端 " + (API_BASE || location.origin));
+    const badge = $("#llmBadge");
+    if (cfg.llm.available) { badge.textContent = "LLM 已接入 · " + cfg.llm.model; badge.classList.add("on"); }
+    else { badge.textContent = "规则分解模式（无 API Key 亦可演示）"; }
+    const sel = $("#strategy");
+    sel.innerHTML = cfg.strategies.map(s => `<option value="${s.key}">${s.label}</option>`).join("");
+    updateStrategyHint(cfg.strategies);
+    sel.onchange = () => updateStrategyHint(cfg.strategies);
+
+    const ex = await api("/api/examples");
+    const box = $("#exampleChips");
+    box.innerHTML = ex.examples.map(e => `<span class="chip" data-file="${e.file}">${e.name}</span>`).join("");
+    box.querySelectorAll(".chip").forEach(c => c.onclick = () => loadExample(c.dataset.file));
+
+    // 支持 ?file=spec_case_b.md&strategy=max_parallel&auto=1 直接跑到结果页（课堂演示用）
+    const qp = new URLSearchParams(location.search);
+    const want = qp.get("file");
+    if (want) {
+      await loadExample(want);
+      if (qp.get("strategy")) $("#strategy").value = qp.get("strategy");
+      if (qp.get("granularity")) $("#granularity").value = qp.get("granularity");
+      updateStrategyHint(cfg.strategies);
+      if (qp.get("auto") !== "0") {
+        await run();
+        if (qp.get("tab")) switchTab(qp.get("tab"));
+      }
+    } else if (ex.examples[0]) {
+      loadExample(ex.examples[0].file);
+    }
+  } catch (e) {
+    if (e.network && attempt < 20) {
+      // 服务还在重启就自动等它，最多重试 20 次（约 30 秒），不打扰用户
+      logEvent("warn", "初始化", "等待服务", `连不上后端，${2} 秒后自动重试（第 ${attempt + 1} 次）`);
+      setTimeout(() => boot(attempt + 1), 1500);
+      return;
+    }
+    logEvent("error", "初始化", "config", e.message);
+  }
+}
+
+function updateStrategyHint(list) {
+  const v = $("#strategy").value;
+  const s = list.find(x => x.key === v);
+  $("#strategyHint").textContent = s ? s.desc : "";
+}
+
+async function loadExample(file) {
+  const data = await api("/api/example?file=" + encodeURIComponent(file));
+  $("#specText").value = data.text;
+  document.querySelectorAll("#exampleChips .chip").forEach(c => c.classList.toggle("on", c.dataset.file === file));
+}
+
+/* ---------------- 运行 ---------------- */
+async function run() {
+  const text = $("#specText").value.trim();
+  if (!text) return;
+  if (state.busy) return;
+  setBusy(true);
+  $("#logbar").classList.remove("collapsed");
+  try {
+    const payload = {
+      spec_text: text,
+      decompose: { granularity: $("#granularity").value },
+      orchestrate: readOrchestrate(),
+    };
+    logEvent("info", "input", "提交", "规格已提交，等待解析");
+    const data = await api("/api/run", payload);
+    if (!data.ok) { logEvent("error", "run", "失败", data.error || "未知错误"); setBusy(false); return; }
+    applyResult(data);
+    pushHistory(data);
+    saveWorkflow();
+  } catch (e) {
+    logEvent("error", "run", "失败", e.message);
+    if (e.network) {
+      logEvent("warn", "run", "重试", "3 秒后自动重试一次，无需刷新页面");
+      setTimeout(() => run(), 3000);
+    }
+  } finally {
+    setBusy(false);
+  }
+}
+
+function readOrchestrate() {
+  return {
+    strategy: $("#strategy").value,
+    max_parallel: parseInt($("#maxParallel").value || "3", 10),
+    per_role_wip_limit: parseInt($("#wipLimit").value || "2", 10),
+  };
+}
+
+function applyResult(data, keepTab) {
+  state.spec = data.spec; state.tasks = data.tasks; state.plan = data.plan;
+  if (!keepTab) state.impactReqId = null;
+  state.coverage = data.coverage; state.meta = data.meta || state.meta;
+  if (data.meta && data.meta.llm) updateLlmBadge(data.meta.llm);
+  state.planDiff = data.plan_diff || null;
+  state.selected = null;
+  state.simIndex = -1;
+  renderSpec(); renderTasks(); renderPlan(); updateCounts();
+  playEvents(data.events || []);
+  $("#rePlanBtn").disabled = !state.tasks.length;
+  if (!keepTab) switchTab(data.plan ? "plan" : "spec");
+}
+
+function updateLlmBadge(llm) {
+  const badge = $("#llmBadge");
+  if (llm.available) { badge.textContent = "LLM 已接入 · " + llm.model; badge.classList.add("on"); }
+}
+
+function setBusy(b) {
+  state.busy = b;
+  $("#runBtn").disabled = b;
+  $("#runBtn").innerHTML = b ? '<span class="spinner"></span> 处理中…' : "解析并分解";
+}
+
+function pushHistory(data) {
+  const h = {
+    product: data.spec.product,
+    reqs: data.spec.requirements.length,
+    tasks: data.tasks.length,
+    batches: data.plan ? data.plan.batches.length : 0,
+    mode: data.meta ? data.meta.mode : "",
+  };
+  state.history = state.history.filter(x => x.product !== h.product).concat(h).slice(-4);
+  const box = $("#historyBox");
+  const uniqueProducts = new Set(state.history.map(x => x.product)).size;
+  box.innerHTML = state.history.map(x =>
+    `<div><b>${esc(x.product)}</b><br>${x.reqs} 需求 → ${x.tasks} 任务 / ${x.batches} 批次 · ${x.mode === "llm" ? "LLM" : "规则"}</div>`
+  ).join("") + (uniqueProducts >= 2
+    ? `<div style="color:var(--ok)">✓ 已用 ${uniqueProducts} 份不同产品的规格跑通，核心代码零修改</div>`
+    : `<div>再跑一个不同产品，即可验证通用性</div>`);
+}
+
+/* ---------------- 规格面板 ---------------- */
+function renderSpec() {
+  const s = state.spec;
+  $("#specEmpty").style.display = "none";
+  $("#specBody").style.display = "block";
+  if (!s) return;
+  const qs = s.questions || [];
+  const blockQ = qs.filter(q => q.severity === "blocking");
+  const coverMap = {};
+  state.tasks.forEach(t => (t.source_refs || []).forEach(r => { coverMap[r.req_id] = (coverMap[r.req_id] || 0) + 1; }));
+
+  $("#specBody").innerHTML = `
+    ${blockQ.length ? `<div class="banner err">有 ${blockQ.length} 个阻断性缺项：${blockQ.map(q => esc(q.question)).join("；")}</div>` : ""}
+    <div class="card">
+      <h4>产品与目标<span class="sub">${esc(s.source_format)} · ${s.raw_chars} 字符 · ${s.version}</span></h4>
+      <div class="kv">
+        <div class="k">产品</div><div><b>${esc(s.product)}</b></div>
+        <div class="k">目标</div><div>${esc(s.goal) || "<span class='src'>未填写</span>"}</div>
+        <div class="k">模块</div><div>${s.modules.map(m => `<span class="tag">${esc(m.name)}</span>`).join(" ") || "—"}</div>
+        <div class="k">约束</div><div>${(s.constraints || []).map(c => `<span class="tag">${esc(c)}</span>`).join(" ") || "—"}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>结构化需求<span class="sub">每条都带出处，任务必须引用到这里才会被判定为"已确认"</span></h4>
+      <table>
+        <thead><tr><th style="width:60px">编号</th><th style="width:104px">模块</th><th>需求</th><th style="width:56px">优先级</th><th style="width:64px">行号</th><th style="width:76px">任务覆盖</th><th style="width:62px">追踪</th></tr></thead>
+        <tbody>
+        ${(s.requirements || []).map(r => `
+          <tr>
+            <td class="src">${esc(r.req_id)}</td>
+            <td>${esc(r.module || "—")}${r.kind !== "functional" ? ` <span class="tag">${r.kind === "non_functional" ? "非功能" : r.kind === "constraint" ? "约束" : "验收"}</span>` : ""}</td>
+            <td>${esc(r.text)}</td>
+            <td><span class="tag p${(r.priority || "P1")[1]}">${esc(r.priority)}</span></td>
+            <td class="src" title="${esc(r.section)}">${r.line ? "L" + r.line : "—"}</td>
+            <td class="num">${coverMap[r.req_id] ? coverMap[r.req_id] + " 条" : "<span class='tag pending'>未覆盖</span>"}</td>
+            <td><button class="ghost" data-impact-req="${esc(r.req_id)}">查看影响</button></td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+
+    ${renderRequirementImpact()}
+
+    <div class="card">
+      <h4>待确认问题<span class="sub">系统不替用户猜，缺什么就标什么</span></h4>
+      ${qs.length ? `<ul class="plain">${qs.map(q => `<li><span class="tag ${q.severity === "blocking" ? "blocked" : "pending"}">${q.severity === "blocking" ? "阻断" : "待确认"}</span> <b>${esc(q.target)}</b>：${esc(q.question)}</li>`).join("")}</ul>`
+        : `<div class="hint">没有待确认项，规格信息完整。</div>`}
+    </div>
+
+    <div class="card">
+      <h4>需求覆盖检查<span class="sub">分工③的交付物：覆盖率 / 重复 / 缺验收标准</span></h4>
+      <div class="stats">
+        <div class="stat"><b>${Math.round((state.coverage?.coverage_ratio || 0) * 100)}%</b><span>需求覆盖率</span></div>
+        <div class="stat"><b>${state.coverage?.missing_requirements?.length || 0}</b><span>未覆盖需求</span></div>
+        <div class="stat"><b>${state.coverage?.duplicate_tasks?.length || 0}</b><span>疑似重复任务</span></div>
+        <div class="stat"><b>${state.coverage?.pending_tasks?.length || 0}</b><span>待确认任务</span></div>
+      </div>
+      ${(state.coverage?.duplicate_tasks || []).length ? `<div class="banner warn" style="margin-top:10px">${state.coverage.duplicate_tasks.map(esc).join("；")}</div>` : ""}
+    </div>`;
+
+  $("#specBody").querySelectorAll("[data-impact-req]").forEach(btn => {
+    btn.onclick = () => {
+      state.impactReqId = btn.dataset.impactReq;
+      renderSpec(); renderTasks(); renderPlan();
+      logEvent("info", "impact", state.impactReqId, "已追踪该需求的直接任务和依赖下游");
+    };
+  });
+  $("#specBody").querySelectorAll("[data-impact-task]").forEach(btn => {
+    btn.onclick = () => { switchTab("plan"); showTaskDetail(btn.dataset.impactTask); };
+  });
+}
+
+function requirementImpact() {
+  const reqId = state.impactReqId;
+  if (!reqId) return null;
+  const requirement = (state.spec?.requirements || []).find(r => r.req_id === reqId);
+  if (!requirement) return null;
+  const direct = new Set(state.tasks.filter(t => (t.source_refs || []).some(r => r.req_id === reqId)).map(t => t.task_id));
+  const affected = new Set(direct);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const task of state.tasks) {
+      if (!affected.has(task.task_id) && (task.depends_on || []).some(id => affected.has(id))) {
+        affected.add(task.task_id); changed = true;
+      }
+    }
+  }
+  return {requirement, direct, affected, downstream: new Set([...affected].filter(id => !direct.has(id)))};
+}
+
+function renderRequirementImpact() {
+  const impact = requirementImpact();
+  if (!impact) return `<div class="card"><h4>需求影响分析<span class="sub">选择一条需求，追踪关联任务与下游依赖</span></h4><div class="hint">点击需求行中的「查看影响」，系统会沿需求引用和任务依赖关系计算影响范围。</div></div>`;
+  const taskById = Object.fromEntries(state.tasks.map(t => [t.task_id, t]));
+  const batchByTask = {};
+  (state.plan?.batches || []).forEach(b => b.task_ids.forEach(id => batchByTask[id] = b.batch_index));
+  const ids = [...impact.affected].sort((a, b) => (batchByTask[a] || 999) - (batchByTask[b] || 999) || a.localeCompare(b));
+  const effort = ids.reduce((sum, id) => sum + Number(taskById[id]?.estimate_days || 0), 0);
+  const critical = ids.filter(id => (state.plan?.critical_path || []).includes(id)).length;
+  return `<div class="card">
+    <h4>需求影响分析<span class="sub">静态追踪：需求引用 → 直接任务 → 依赖下游</span></h4>
+    <div class="banner info"><b>${esc(impact.requirement.req_id)}</b> ${esc(impact.requirement.text)}</div>
+    <div class="stats">
+      <div class="stat"><b>${impact.direct.size}</b><span>直接关联任务</span></div>
+      <div class="stat"><b>${impact.downstream.size}</b><span>下游受影响任务</span></div>
+      <div class="stat"><b>${effort.toFixed(1)}</b><span>影响范围工作量（人日）</span></div>
+      <div class="stat"><b>${critical}</b><span>关键路径任务</span></div>
+    </div>
+    ${ids.length ? `<table style="margin-top:12px"><thead><tr><th>任务</th><th>影响关系</th><th>批次</th><th>估算</th><th>详情</th></tr></thead><tbody>
+      ${ids.map(id => { const t = taskById[id]; return `<tr class="${impact.direct.has(id) ? "impact-direct" : "impact-downstream"}">
+        <td><b>${esc(id)}</b> ${esc(t?.title || "")}</td>
+        <td><span class="tag">${impact.direct.has(id) ? "直接引用需求" : "依赖下游"}</span></td>
+        <td>${batchByTask[id] ? "第 " + batchByTask[id] + " 批" : "未进入批次"}</td>
+        <td>${Number(t?.estimate_days || 0).toFixed(1)} 人日</td>
+        <td><button class="ghost" data-impact-task="${esc(id)}">查看任务</button></td>
+      </tr>`; }).join("")}
+      </tbody></table>` : `<div class="banner warn" style="margin-top:12px">当前没有任务直接引用该需求，需求覆盖可能存在缺口。</div>`}
+    <div class="hint" style="margin-top:8px">标记的工作量为受影响任务估算之和，不等同于项目工期；下游范围由当前 depends_on 依赖关系推导。</div>
+  </div>`;
+}
+
+/* ---------------- 任务面板 ---------------- */
+function renderTasks() {
+  $("#taskEmpty").style.display = "none";
+  $("#taskBody").style.display = "block";
+  if (!state.tasks.length) return;
+  const pending = state.tasks.filter(t => t.status === "pending");
+  const mode = state.meta ? state.meta.mode : "";
+  const modeText = {llm: "大模型分解", rule: "规则分解", rule_fallback: "规则兜底（LLM 不可用）"}[mode] || "";
+
+  $("#taskBody").innerHTML = `
+    <div class="banner info">
+      分解方式：<b>${modeText}</b>${state.meta?.llm_tasks ? `（LLM ${state.meta.llm_tasks} 条 / 规则补 ${state.meta.rule_tasks} 条）` : ""}
+      · 粒度 ${esc(state.meta?.decompose_config?.granularity_label || "")}
+      · 共 ${state.tasks.length} 条任务，${pending.length} 条待确认。
+      改完角色/人日/依赖后，去「编排与可视化」点重新编排。
+    </div>
+    ${pending.length ? `<div class="banner warn">待确认任务不会进入执行计划：${pending.map(t => esc(t.task_id + " " + (t.pending_reason || ""))).join("；")}</div>` : ""}
+    <div class="card" style="padding:0">
+      <table>
+        <thead><tr>
+          <th style="width:64px">编号</th><th>任务</th>
+          <th style="width:100px">角色</th><th style="width:70px">优先级</th><th style="width:64px">人日</th>
+          <th style="width:150px">依赖</th><th style="width:72px">状态</th><th style="width:104px">出处</th><th style="width:36px"></th>
+        </tr></thead>
+        <tbody>${state.tasks.map(t => taskRow(t)).join("")}</tbody>
+      </table>
+    </div>
+    <div class="hint">人日、角色、优先级、依赖都可直接改；改动会标记为「人工」并进入下一次重新编排。</div>`;
+
+  $("#taskBody").querySelectorAll("[data-edit]").forEach(inp => {
+    inp.onchange = () => editTask(inp.dataset.id, inp.dataset.edit, inp.value);
+  });
+    $("#taskBody").querySelectorAll("[data-del]").forEach(btn => {
+      btn.onclick = () => {
+        state.tasks = state.tasks.filter(t => t.task_id !== btn.dataset.del);
+        state.tasks.forEach(t => t.depends_on = (t.depends_on || []).filter(d => d !== btn.dataset.del));
+        renderTasks(); updateCounts(); saveWorkflow();
+      };
+    });
+}
+
+function taskRow(t) {
+  const impact = requirementImpact();
+  const impactClass = impact?.direct.has(t.task_id) ? "impact-direct" : impact?.downstream.has(t.task_id) ? "impact-downstream" : "";
+  const refs = (t.source_refs || []).map(r => r.req_id).join(",") || "—";
+  const roleOpts = ["pm","backend","frontend","qa","devops","design"]
+    .map(r => `<option value="${r}" ${t.suggested_role === r ? "selected" : ""}>${{pm:"PM",backend:"后端",frontend:"前端",qa:"测试",devops:"运维",design:"设计"}[r]}</option>`).join("");
+  return `<tr class="${impactClass}">
+    <td class="src">${esc(t.task_id)}<br><span class="tag ${t.origin}">${t.origin === "llm" ? "LLM" : t.origin === "human" ? "人工" : "规则"}</span></td>
+    <td><span class="kdot" style="background:${KIND_COLOR[t.kind] || "#888"}" title="${KIND_ZH[t.kind] || t.kind}"></span><b>${esc(t.title)}</b>
+      <span class="dim">${esc(t.deliverable || "缺交付物")}</span></td>
+    <td><select data-edit="suggested_role" data-id="${t.task_id}">${roleOpts}</select></td>
+    <td><select data-edit="priority" data-id="${t.task_id}">
+      ${["P0","P1","P2"].map(p => `<option ${t.priority === p ? "selected" : ""}>${p}</option>`).join("")}</select></td>
+    <td><input type="number" step="0.5" min="0.5" max="2" style="width:58px" data-edit="estimate_days" data-id="${t.task_id}" value="${t.estimate_days}"></td>
+    <td><input type="text" style="width:138px" data-edit="depends_on" data-id="${t.task_id}" value="${esc((t.depends_on || []).join(","))}" placeholder="T-01,T-02"></td>
+    <td><span class="tag ${t.status}">${STATUS_ZH[t.status] || t.status}</span></td>
+    <td class="src" style="max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(refs)}">${esc(refs)}</td>
+    <td><button class="ghost" data-del="${t.task_id}" title="删除任务">×</button></td>
+  </tr>`;
+}
+
+function editTask(id, field, value) {
+  const t = state.tasks.find(x => x.task_id === id);
+  if (!t) return;
+  if (field === "estimate_days") t.estimate_days = Math.max(0.5, Math.min(2, parseFloat(value) || 1));
+  else if (field === "depends_on") t.depends_on = String(value).split(",").map(s => s.trim()).filter(Boolean).filter(d => d !== id);
+  else t[field] = value;
+  t.origin = "human";
+  logEvent("info", "review", "编辑", `${id} ${field} → ${value}`);
+}
+
+/* ---------------- 编排面板 ---------------- */
+async function rePlan() {
+  if (state.busy || !state.tasks.length) return;
+  setBusy(true);
+  try {
+    const data = await api("/api/reorchestrate", {
+      spec: state.spec, tasks: state.tasks, orchestrate: readOrchestrate(),
+    });
+    if (!data.ok) { logEvent("error", "orchestrate", "重排失败", data.error || ""); return; }
+    applyResult(data, true);
+    switchTab("plan");
+    renderPlanDiff(data.plan_diff);
+    saveWorkflow();
+  } catch (e) {
+    logEvent("error", "orchestrate", "重排失败", e.message);
+  } finally { setBusy(false); }
+}
+
+function renderPlan() {
+  $("#planEmpty").style.display = "none";
+  $("#planBody").style.display = "block";
+  const p = state.plan;
+  if (!p) return;
+  const st = p.stats || {};
+  const byId = Object.fromEntries(state.tasks.map(t => [t.task_id, t]));
+  const critSet = new Set(p.critical_path || []);
+
+  $("#planBody").innerHTML = `
+    ${p.valid ? "" : `<div class="banner err">计划未通过校验，以下问题需先修正：<br>${p.errors.map(esc).join("<br>")}</div>`}
+    <div class="card">
+      <h4>${esc(p.plan_id)}<span class="sub">策略：${esc(strategyLabel(p.strategy))} · 生成于 ${esc(p.generated_at)}</span>
+        <span style="margin-left:auto"><button id="simBtn" class="ghost">▷ 演练推进</button></span></h4>
+      <div class="stats">
+        <div class="stat"><b>${st.task_count || 0}</b><span>任务总数</span></div>
+        <div class="stat"><b>${st.batch_count || 0}</b><span>执行批次</span></div>
+        <div class="stat"><b>${st.max_parallel_width || 0}</b><span>最大并行宽度</span></div>
+        <div class="stat"><b>${st.total_effort_days || 0}</b><span>总工作量（人日）</span></div>
+        <div class="stat"><b>${st.critical_path_days || 0}</b><span>关键路径（人日）</span></div>
+        <div class="stat"><b>${st.blocked_count || 0}</b><span>未进入批次</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>任务依赖图<span class="sub">按拓扑层级从左到右排布，红线为关键路径，点击节点看详情</span></h4>
+      <div class="dagwrap">${renderDag(state.tasks, p, byId, critSet)}</div>
+      <div class="hint" style="margin-top:8px">图宽超过可视区时可左右拖动底部滚动条；悬停节点可查看任务详情，点击需求表中的行可高亮关联任务。</div>
+      <div class="legend">
+        ${Object.entries(KIND_ZH).map(([k, v]) => `<span><i style="background:${KIND_COLOR[k]}"></i>${v}</span>`).join("")}
+        <span><i style="background:#c0392b"></i>关键路径</span>
+        <span><i style="background:#fff;border:1px dashed #b45309"></i>待确认/阻塞</span>
+        ${state.impactReqId ? `<span><i style="background:#0f766e"></i>需求直接关联</span><span><i style="background:#7c3aed"></i>依赖下游</span>` : ""}
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>执行批次（泳道）<span class="sub">同一批次内任务可并行；批次之间有依赖，必须顺序推进</span></h4>
+      ${(p.batches || []).map(b => `
+        <div class="lane">
+          <div class="lane-id"><b>第 ${b.batch_index} 批</b>${b.task_ids.length} 个任务<br>并行 ≤ ${b.parallel_limit}</div>
+          <div class="lane-body">
+            ${b.task_ids.map(id => {
+              const t = byId[id] || {title: id, kind: "backend"};
+              return `<span class="tchip ${critSet.has(id) ? "crit" : ""}" data-task="${id}">
+                <i class="dot" style="background:${KIND_COLOR[t.kind] || "#888"}"></i>
+                <b class="src">${esc(id)}</b> ${esc(t.title.length > 18 ? t.title.slice(0, 17) + "…" : t.title)}
+                <span class="src">${esc(t.suggested_role || "")}</span></span>`;
+            }).join("")}
+          </div>
+          <div class="lane-body" style="grid-column:2;color:var(--muted);font-size:11px">${esc(b.rationale || "")}</div>
+        </div>`).join("")}
+    </div>
+
+    <div class="card">
+      <h4>关键路径<span class="sub">工期压不下去的根本原因；想缩短总工期只能优化这条链</span></h4>
+      ${(p.critical_path || []).length
+        ? `<div class="lane-body">${p.critical_path.map((id, i) => {
+            const t = byId[id] || {};
+            return `${i ? '<span style="color:var(--muted)">→</span>' : ""}<span class="tchip crit" data-task="${id}"><b class="src">${esc(id)}</b> ${esc(t.title || "")}</span>`;
+          }).join("")}</div>
+          <div class="hint" style="margin-top:8px">累计 ${st.critical_path_days || 0} 人日；按批次排布的理论工期约 ${st.scheduled_wall_days || 0} 人日，并行节省 ${st.parallel_saving_days || 0} 人日。</div>`
+        : `<div class="hint">无关键路径（任务为空或全部被阻塞）。</div>`}
+    </div>
+
+    <div class="card">
+      <h4>未进入批次的任务<span class="sub">待确认 / 循环依赖 / 被前置阻塞</span></h4>
+      ${(p.blocked || []).length
+        ? `<table><thead><tr><th style="width:70px">任务</th><th style="width:180px">任务名</th><th>阻塞原因</th></tr></thead><tbody>
+            ${p.blocked.map(b => `<tr><td class="src">${esc(b.task_id)}</td><td>${esc((byId[b.task_id] || {}).title || "—")}</td>
+            <td><span class="tag blocked">阻塞</span> ${esc(b.reason)}</td></tr>`).join("")}
+          </tbody></table>`
+        : `<div class="hint">全部任务都进入了批次。</div>`}
+    </div>
+
+    <div class="card">
+      <h4>编排依据<span class="sub">这些是"为什么这么排"的可核验说明</span></h4>
+      <ul class="rationale">${(p.rationale || []).map(r => `<li>${esc(r)}</li>`).join("")}</ul>
+    </div>
+
+    <div id="planDiffBox"></div>
+    <div class="card" id="taskDetail" style="display:none"></div>`;
+
+  $("#planBody").querySelectorAll("[data-task]").forEach(el => {
+    el.onclick = () => showTaskDetail(el.dataset.task);
+  });
+  const sim = $("#simBtn");
+  if (sim) sim.onclick = simulateRun;
+  if (state.planDiff) renderPlanDiff(state.planDiff);
+}
+
+function strategyLabel(key) {
+  return {dependency_first:"依赖优先", max_parallel:"并行最大化", role_batch:"角色批量", critical_path:"关键路径优先"}[key] || key;
+}
+
+/* ---------------- DAG 绘制 ---------------- */
+function renderDag(tasks, plan, byId, critSet) {
+  if (!tasks.length) return `<div class="empty">没有任务</div>`;
+  // 层级：只按可执行任务的依赖算，被阻塞任务放最后一列
+  const ids = tasks.map(t => t.task_id);
+  const level = {};
+  const blockedSet = new Set((plan.blocked || []).map(b => b.task_id));
+  const calc = (id, stack) => {
+    if (level[id] != null) return level[id];
+    if (stack.has(id)) return 1;
+    stack.add(id);
+    const t = byId[id];
+    const deps = (t.depends_on || []).filter(d => byId[d] && !blockedSet.has(d));
+    const lv = deps.length ? 1 + Math.max(...deps.map(d => calc(d, stack))) : 1;
+    stack.delete(id);
+    level[id] = lv;
+    return lv;
+  };
+  ids.forEach(id => calc(id, new Set()));
+
+  const cols = {};
+  ids.forEach(id => (cols[level[id]] = cols[level[id]] || []).push(id));
+  const NW = 190, NH = 62, GX = 96, GY = 22, PAD = 30;
+  const maxRows = Math.max(...Object.values(cols).map(c => c.length), 1);
+  const width = PAD * 2 + Object.keys(cols).length * (NW + GX) - GX;
+  const height = PAD * 2 + maxRows * (NH + GY) - GY;
+  const pos = {};
+  Object.keys(cols).sort((a, b) => a - b).forEach((lv, ci) => {
+    cols[lv].forEach((id, ri) => {
+      pos[id] = {x: PAD + ci * (NW + GX), y: PAD + ri * (NH + GY)};
+    });
+  });
+
+  const edges = [];
+  tasks.forEach(t => (t.depends_on || []).forEach(d => {
+    if (!pos[d] || !pos[t.task_id]) return;
+    const a = pos[d], b = pos[t.task_id];
+    const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x, y2 = b.y + NH / 2;
+    const crit = critSet.has(t.task_id) && critSet.has(d);
+    const mx = (x1 + x2) / 2;
+    edges.push(`<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 6},${y2}"
+      fill="none" stroke="${crit ? "#d64541" : "#e3e6ec"}" stroke-width="${crit ? 2 : 1.2}"
+      marker-end="url(#${crit ? "arrR" : "arr"})" opacity="${crit ? .95 : .7}"/>`);
+  }));
+
+  const impact = requirementImpact();
+  const nodes = tasks.map(t => {
+    const p = pos[t.task_id];
+    if (!p) return "";
+    const color = KIND_COLOR[t.kind] || "#888";
+    const blocked = t.status === "pending" || blockedSet.has(t.task_id);
+    const done = t.status === "done";
+    const direct = impact?.direct.has(t.task_id);
+    const downstream = impact?.downstream.has(t.task_id);
+    const impactOn = !!state.impactReqId;
+    const stroke = blocked ? "#d8a13c"
+      : (impactOn && direct ? "#0f766e"
+      : (impactOn && downstream ? "#7c3aed"
+      : (critSet.has(t.task_id) ? "#d64541" : "#e3e6ec")));
+    const strokeWidth = blocked || critSet.has(t.task_id) ? 1.8 : (impactOn && (direct || downstream) ? 2.2 : 1.2);
+    const dash = blocked ? 'stroke-dasharray="5 3"' : "";
+    const title = t.title.length > 13 ? t.title.slice(0, 12) + "…" : t.title;
+    const badge = direct ? `<circle cx="${p.x + NW - 12}" cy="${p.y + 12}" r="4.5" fill="#0f9d8f"><title>无前置依赖，可立即开始</title></circle>` : "";
+    return `<g class="node" data-task="${t.task_id}" opacity="${done ? .55 : 1}">
+      <rect x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="8" fill="#fff" stroke="${stroke}" ${dash} stroke-width="${strokeWidth}"/>
+      <rect x="${p.x}" y="${p.y}" width="4" height="${NH}" rx="2" fill="${color}"/>
+      <text x="${p.x + 14}" y="${p.y + 19}" font-size="12" fill="#8994a7" font-family="monospace">${esc(t.task_id)} · ${KIND_ZH[t.kind] || t.kind}</text>
+      <text x="${p.x + 14}" y="${p.y + 40}" font-size="14" fill="#1a1e24">${esc(escapeXml(title))}</text>
+      <text x="${p.x + 14}" y="${p.y + NH - 9}" font-size="11.5" text-anchor="start" fill="#8994a7">${esc(t.estimate_days)}d · ${esc(t.suggested_role)}${downstream ? " · 被依赖" : ""}</text>
+      ${badge}
+    </g>`;
+  }).join("");
+
+  return `<svg class="dag" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <defs>
+      <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L6,3 L0,6" fill="none" stroke="#c4cad4" stroke-width="1.2"/></marker>
+      <marker id="arrR" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L6,3 L0,6" fill="none" stroke="#d64541" stroke-width="1.4"/></marker>
+    </defs>
+    ${edges.join("")}${nodes}
+  </svg>`;
+}
+
+function showTaskDetail(id) {
+  const t = state.tasks.find(x => x.task_id === id);
+  const box = $("#taskDetail");
+  if (!t || !box) return;
+  const refs = (t.source_refs || []).map(r =>
+    `<div><span class="tag">${esc(r.req_id)}</span> <span class="src">${esc(r.section)}${r.line ? " · L" + r.line : ""}</span><br><span class="src">「${esc(r.quote || "")}」</span></div>`
+  ).join("") || `<span class="tag pending">无出处</span>`;
+  box.style.display = "block";
+  box.innerHTML = `
+    <h4>${esc(t.task_id)} ${esc(t.title)}<span class="sub">${KIND_ZH[t.kind]} · ${esc(t.suggested_role)} · ${t.estimate_days} 人日 · <span class="tag ${t.priority[1] === "0" ? "p0" : t.priority[1] === "1" ? "p1" : "p2"}">${t.priority}</span></span></h4>
+    <div class="kv">
+      <div class="k">模块</div><div>${esc(t.module)}</div>
+      <div class="k">描述</div><div>${esc(t.description || "—")}</div>
+      <div class="k">交付物</div><div>${esc(t.deliverable || "—")}</div>
+      <div class="k">验收标准</div><div>${(t.acceptance_criteria || []).map(c => "· " + esc(c)).join("<br>") || "—"}</div>
+      <div class="k">依赖</div><div>${(t.depends_on || []).join(", ") || "无"}</div>
+      <div class="k">出处</div><div>${refs}</div>
+      <div class="k">状态</div><div><span class="tag ${t.status}">${STATUS_ZH[t.status] || t.status}</span> ${esc(t.pending_reason || "")}</div>
+    </div>`;
+  box.scrollIntoView({behavior: "smooth", block: "nearest"});
+}
+
+function renderPlanDiff(diff) {
+  const box = $("#planDiffBox");
+  if (!box || !diff) return;
+  box.innerHTML = `<div class="card">
+    <h4>计划版本差异<span class="sub">与上一版对比：人工审核或换策略后变了什么</span></h4>
+    <ul class="plain">${diff.map(d => `<li>${esc(d)}</li>`).join("")}</ul></div>`;
+}
+
+/* ---------------- 演练推进 ---------------- */
+async function simulateRun() {
+  if (!state.plan) return;
+  const data = await api("/api/simulate", {tasks: state.tasks, plan: state.plan});
+  const evs = data.events || [];
+  let done = {};
+  evs.forEach((e, i) => {
+    setTimeout(() => {
+      if (e.event_type === "start") e.event_type = "info";
+      logEvent(e.event_type === "done" ? "done" : "info", "run", e.task_id || "task", e.message);
+      if (e.event_type === "done") {
+        done[e.task_id] = true;
+        markChipDone(e.task_id);
+      }
+    }, i * 45);
+  });
+}
+
+function markChipDone(id) {
+  document.querySelectorAll(`.tchip[data-task="${id}"]`).forEach(el => el.classList.add("done"));
+  document.querySelectorAll(`svg.dag .node[data-task="${id}"]`).forEach(el => el.setAttribute("opacity", ".5"));
+}
+
+/* ---------------- 事件流 ---------------- */
+function logEvent(etype, phase, id, message) {
+  const box = $("#logBody");
+  const div = document.createElement("div");
+  div.className = "ev " + etype;
+  const t = new Date().toLocaleTimeString("zh-CN", {hour12: false});
+  div.innerHTML = `<span class="t">${t}</span><span class="p">${esc(phase)}</span><span class="m">${id ? `<b>${esc(id)}</b> ` : ""}${esc(message)}</span>`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  $("#logCount").textContent = box.children.length + " 条";
+}
+
+function playEvents(events) {
+  events.forEach((e, i) => {
+    setTimeout(() => {
+      logEvent(e.event_type === "done" ? "done" : (e.event_type === "warn" ? "warn" : e.event_type === "error" ? "error" : "info"),
+        e.phase, "", e.message);
+    }, i * 70);
+  });
+  if (events.length) {
+    // 播报完 1.5 秒后自动收起，把屏幕留给结果
+    setTimeout(() => $("#logbar").classList.add("collapsed"), events.length * 70 + 1500);
+  }
+}
+
+/* ---------------- 其它 ---------------- */
+function updateCounts() {
+  $("#nSpec").textContent = state.spec ? state.spec.requirements.length + " 条需求" : "";
+  $("#nTask").textContent = state.tasks.length ? state.tasks.length + " 条" : "";
+  $("#nPlan").textContent = state.plan ? state.plan.batches.length + " 批次" : "";
+  const done = state.spec ? 1 : 0;
+  $("#st1").classList.toggle("on", !!state.spec);
+  $("#st2").classList.toggle("on", !!state.tasks.length);
+  $("#st3").classList.toggle("on", !!state.plan);
+}
+
+function switchTab(name) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.dataset.pane === name));
+  document.querySelectorAll(".pane").forEach(p => p.classList.toggle("on", p.id === "pane-" + name));
+  $("#workflowNav").classList.toggle("on", name !== "workspace");
+}
+
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function escapeXml(s) { return esc(s); }
+
+/* ---------------- 绑定 ---------------- */
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => switchTab(t.dataset.pane));
+$("#showCreateProjectBtn").onclick = () => { const box = $("#sidebarProjectCreate"); box.classList.toggle("on"); if (box.classList.contains("on")) $("#projectName").focus(); };
+$("#workflowNav").onclick = () => { switchTab("spec"); $("#workflowNav").classList.add("on"); };
+$("#createProjectBtn").onclick = createProject;
+$("#projectName").addEventListener("keydown", e => { if (e.key === "Enter") createProject(); });
+$("#addTextFileBtn").onclick = createTextFile;
+$("#uploadFileBtn").onclick = () => $("#filePicker").click();
+$("#filePicker").onchange = uploadFiles;
+$("#sendChatBtn").onclick = sendProjectMessage;
+$("#chatInput").addEventListener("input", updateChatButton);
+$("#chatInput").addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") sendProjectMessage(); });
+$("#closePreviewBtn").onclick = () => $("#filePreview").classList.remove("on");
+$("#filePreview").onclick = e => { if (e.target.id === "filePreview") $("#filePreview").classList.remove("on"); };
+$("#runBtn").onclick = run;
+$("#rePlanBtn").onclick = rePlan;
+$("#clearBtn").onclick = () => { $("#specText").value = ""; };
+$("#loghead").onclick = () => $("#logbar").classList.toggle("collapsed");
+$("#st1").onclick = () => switchTab("spec");
+$("#st2").onclick = () => switchTab("tasks");
+$("#st3").onclick = () => switchTab("plan");
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") run();
+});
+boot();
+loadProjects();
+
+/* ---------------- 项目工作区 ---------------- */
+async function loadProjects() {
+  try {
+    const data = await api("/api/projects"); state.projects = data.projects || [];
+    renderProjectList();
+    if (state.project) {
+      const current = state.projects.find(p => p.id === state.project.id);
+      if (current) await openProject(current.id);
+    }
+  } catch (e) { $("#projectList").innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
+}
+function renderProjectList() {
+  const box = $("#projectList");
+  if (!state.projects.length) { box.innerHTML = '<div class="sidebar-empty">还没有项目。点击上方“新建项目”开始。</div>'; return; }
+  box.innerHTML = state.projects.map(p => `<button class="project-item ${state.project && p.id === state.project.id ? "on" : ""}" data-id="${esc(p.id)}"><b>${esc(p.name)}</b><small>更新于 ${esc(formatLocalTime(p.updated_at))}</small></button>`).join("");
+  box.querySelectorAll(".project-item").forEach(b => b.onclick = async () => { switchTab("workspace"); await openProject(b.dataset.id); });
+}
+function formatLocalTime(value) {
+  if (!value) return "刚刚";
+  try { return new Date(value).toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}); }
+  catch (_) { return value; }
+}
+async function createProject() {
+  const input = $("#projectName"), name = input.value.trim();
+  if (!name) { input.focus(); return; }
+  const btn = $("#createProjectBtn"); btn.disabled = true;
+  try {
+    const data = await api("/api/projects", {name}); input.value = "";
+    $("#sidebarProjectCreate").classList.remove("on");
+    await loadProjects(); if (data.project) { switchTab("workspace"); await openProject(data.project.id); }
+  } catch (e) { alert(e.message); }
+  finally { btn.disabled = false; }
+}
+async function openProject(id) {
+  try {
+    const data = await api("/api/project?id=" + encodeURIComponent(id));
+    state.project = data; state.selectedContext = new Set();
+    renderProjectList(); renderProject();
+    restoreWorkflow(data.workflow);
+  } catch (e) { $("#chatStatus").textContent = e.message; }
+}
+
+/* ---------- 项目级工作流状态：每个项目有自己独立的规格/任务/编排 ---------- */
+async function saveWorkflow() {
+  if (!state.project || !state.spec) return;
+  const wf = {
+    spec_text: $("#specText").value,
+    config: {
+      granularity: $("#granularity").value, strategy: $("#strategy").value,
+      max_parallel: $("#maxParallel").value, per_role_wip_limit: $("#wipLimit").value,
+    },
+    result: { spec: state.spec, tasks: state.tasks, plan: state.plan, coverage: state.coverage, meta: state.meta },
+    saved_at: new Date().toISOString(),
+  };
+  try {
+    await api("/api/project/workflow", {project_id: state.project.id, workflow: wf});
+    logEvent("info", "project", "保存", `工作流状态已存入项目「${state.project.name}」`);
+  } catch (e) { logEvent("warn", "project", "保存", "未能保存工作流状态：" + e.message); }
+}
+
+function restoreWorkflow(wf) {
+  if (wf && wf.result && wf.result.spec) {
+    $("#specText").value = wf.spec_text || "";
+    if (wf.config) {
+      if (wf.config.granularity) $("#granularity").value = wf.config.granularity;
+      if (wf.config.strategy) $("#strategy").value = wf.config.strategy;
+      if (wf.config.max_parallel) $("#maxParallel").value = wf.config.max_parallel;
+      if (wf.config.per_role_wip_limit != null && wf.config.per_role_wip_limit !== "") $("#wipLimit").value = wf.config.per_role_wip_limit;
+    }
+    applyResult({...wf.result, events: []}, true);
+    $("#rePlanBtn").disabled = !state.tasks.length;
+    logEvent("info", "project", "恢复", `已载入「${state.project.name}」上次的工作区（${(wf.result.tasks || []).length} 条任务）`);
+  } else {
+    resetWorkflow();
+  }
+}
+
+function resetWorkflow() {
+  state.spec = null; state.tasks = []; state.plan = null; state.coverage = null; state.meta = null;
+  state.planDiff = null; state.selected = null; state.impactReqId = null; state.simIndex = -1;
+  $("#specText").value = "";
+  $("#specEmpty").removeAttribute("style"); $("#specBody").style.display = "none"; $("#specBody").innerHTML = "";
+  $("#taskEmpty").removeAttribute("style"); $("#taskBody").style.display = "none"; $("#taskBody").innerHTML = "";
+  $("#planEmpty").removeAttribute("style"); $("#planBody").style.display = "none"; $("#planBody").innerHTML = "";
+  $("#rePlanBtn").disabled = true;
+  updateCounts();
+}
+function renderProject() {
+  const p = state.project; if (!p) return;
+  $("#workspaceProjectName").textContent = p.name;
+  $("#workspaceProjectMeta").textContent = `${(p.files || []).length} 个文件 · 创建于 ${formatLocalTime(p.created_at)}`;
+  $("#fileCount").textContent = (p.files || []).length;
+  const files = $("#fileList");
+  if (!(p.files || []).length) files.innerHTML = '<div class="hint">还没有文件。可以上传或新建文本文件。</div>';
+  else {
+    files.innerHTML = p.files.map(f => `<label class="file-item"><input type="checkbox" data-file="${esc(f.name)}" ${state.selectedContext.has(f.name) ? "checked" : ""}><span title="${esc(f.name)}">${esc(f.name)}</span><button type="button" data-preview="${esc(f.name)}">查看</button></label>`).join("");
+    files.querySelectorAll('input[type="checkbox"]').forEach(c => c.onchange = () => { c.checked ? state.selectedContext.add(c.dataset.file) : state.selectedContext.delete(c.dataset.file); updateContextCount(); });
+    files.querySelectorAll("[data-preview]").forEach(b => b.onclick = e => { e.preventDefault(); e.stopPropagation(); previewFile(b.dataset.preview); });
+  }
+  updateContextCount(); renderChat(p.messages || []); updateChatButton();
+}
+function updateContextCount() { const n = state.selectedContext.size; $("#contextCount").textContent = `${n} 个上下文文件`; }
+function renderChat(messages) {
+  const box = $("#workspaceChat");
+  if (!messages.length) { box.innerHTML = '<div class="chat-welcome"><b>开始这个项目的第一次对话</b><span>历史会跟随项目保存在本机。只有勾选的文件会作为本轮上下文发送给模型。</span></div>'; }
+  else { box.innerHTML = messages.map(m => `<div class="chat-msg ${m.role === "user" ? "user" : "assistant"}"><small>${m.role === "user" ? "你" : "项目助手"}${m.context_files && m.context_files.length ? " · 参考：" + esc(m.context_files.join("、")) : ""}</small>${esc(m.content)}</div>`).join(""); }
+  box.scrollTop = box.scrollHeight;
+}
+async function previewFile(name) {
+  try { const d = await api("/api/project/file?id=" + encodeURIComponent(state.project.id) + "&name=" + encodeURIComponent(name)); $("#previewName").textContent = d.name; $("#previewContent").textContent = d.content; $("#filePreview").classList.add("on"); }
+  catch (e) { alert(e.message); }
+}
+async function saveProjectFile(name, content) {
+  if (!state.project) { alert("请先创建或选择一个项目"); return; }
+  const data = await api("/api/project/files", {project_id:state.project.id, name, content});
+  state.project = data.project; renderProject();
+}
+async function createTextFile() {
+  const input = $("#fileName"), name = input.value.trim();
+  if (!name) { input.focus(); return; }
+  try { await saveProjectFile(name, ""); input.value = ""; }
+  catch (e) { alert(e.message); }
+}
+async function uploadFiles() {
+  const picker = $("#filePicker"), files = [...(picker.files || [])];
+  if (!state.project) { alert("请先创建或选择一个项目"); picker.value = ""; return; }
+  const supported = /\.(md|txt|json|py|html|css|js|ts|tsx|jsx|yml|yaml|xml|csv|log|toml|ini|java|c|cpp|h|sql|sh|bat)$/i;
+  for (const file of files) {
+    if (file.size > 1_000_000) { alert(`${file.name} 超过 1 MB，已跳过`); continue; }
+    if (!supported.test(file.name)) { alert(`${file.name} 不是支持的文本格式，已跳过`); continue; }
+    try { await saveProjectFile(file.name, await file.text()); } catch (e) { alert(e.message); }
+  }
+  picker.value = "";
+}
+function updateChatButton() {
+  $("#sendChatBtn").disabled = !state.project || state.chatBusy || !$("#chatInput").value.trim();
+  $("#chatStatus").textContent = state.project ? (state.chatBusy ? "正在生成回复…" : "仅发送消息和已勾选文件内容") : "选择项目后开始对话";
+}
+async function sendProjectMessage() {
+  if (!state.project || state.chatBusy) return;
+  const input = $("#chatInput"), message = input.value.trim(); if (!message) return;
+  state.chatBusy = true; updateChatButton();
+  const oldMessages = state.project.messages || [];
+  renderChat([...oldMessages, {role:"user", content:message, context_files:[...state.selectedContext]}, {role:"assistant", content:"正在思考…"}]);
+  input.value = "";
+  try {
+    const data = await api("/api/project/chat", {project_id:state.project.id, message, context_files:[...state.selectedContext]});
+    state.project = data.project; renderProject();
+  } catch (e) {
+    renderChat([...oldMessages, {role:"user", content:message, context_files:[...state.selectedContext]}, {role:"assistant", content:`发送失败：${e.message}`}]);
+    input.value = message;
+  } finally { state.chatBusy = false; updateChatButton(); }
+}
+</script>
+</body>
+</html>
