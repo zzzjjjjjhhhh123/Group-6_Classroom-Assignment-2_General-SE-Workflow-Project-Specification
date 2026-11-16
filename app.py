@@ -36,6 +36,8 @@ from config import (
     load_llm_config,
 )
 from pipeline import Pipeline, simulate
+from idea_to_spec import apply_choice_selections, draft_from_idea
+from spec_parser import parse_spec
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -245,11 +247,41 @@ class Handler(BaseHTTPRequestHandler):
                 text = (body.get("spec_text") or "").strip()
                 if not text:
                     return self._json({"ok": False, "error": "规格内容为空"}, 400)
+                if body.get("require_complete_spec"):
+                    try:
+                        parsed = parse_spec(text)
+                    except ValueError as exc:
+                        return self._json({"ok": False, "error": f"规格格式有误：{exc}"}, 400)
+                    blocking = [q.to_dict() for q in parsed.questions if q.severity == "blocking"]
+                    if blocking:
+                        questions = "；".join(q["question"] for q in blocking)
+                        return self._json({"ok": False, "error": "规格还缺少必要内容：" + questions, "questions": blocking}, 400)
                 dcfg = _decompose_cfg(body.get("decompose") or {})
                 ocfg = _orchestrate_cfg(body.get("orchestrate") or {})
                 with _LOCK:
                     result = _PIPELINE.run(text, dcfg, ocfg)
                 return self._json(result)
+
+            if path == "/api/draft-spec":
+                idea = str(body.get("idea") or "")
+                details = str(body.get("details") or "")
+                try:
+                    draft = draft_from_idea(idea, details)
+                    draft["preview"] = parse_spec(draft["draft_markdown"]).to_dict()
+                    return self._json(draft)
+                except ValueError as exc:
+                    return self._json({"ok": False, "error": str(exc)}, 400)
+
+            if path == "/api/confirm-spec-draft":
+                idea = str(body.get("idea") or "").strip()
+                base_markdown = str(body.get("base_markdown") or "")
+                selections = body.get("selections") or {}
+                if not idea or not isinstance(selections, dict):
+                    return self._json({"ok": False, "error": "想法或选项无效"}, 400)
+                markdown = apply_choice_selections(idea, base_markdown, selections)
+                parsed = parse_spec(markdown)
+                blocking = [q.to_dict() for q in parsed.questions if q.severity == "blocking"]
+                return self._json({"ok": True, "draft_markdown": markdown, "preview": parsed.to_dict(), "can_confirm": not blocking, "blocking_questions": blocking})
 
             if path == "/api/reorchestrate":
                 ocfg = _orchestrate_cfg(body.get("orchestrate") or {})

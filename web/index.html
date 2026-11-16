@@ -354,6 +354,33 @@
   .spec-entry-foot{min-height:31px}
   .spec-entry-actions{display:flex;align-items:center;gap:7px}
   .spec-entry-actions button{height:30px;padding:5px 11px;font-size:10.5px}
+  .entry-modes{display:flex;gap:7px;margin:12px 0 8px}
+  .entry-mode{border:1px solid #e0e6f0;background:#f8f9fc;color:#66738a;border-radius:8px;padding:7px 12px;font:inherit;font-size:11px;cursor:pointer}
+  .entry-mode.on{border-color:#cbd5fa;background:#eef1ff;color:#4c63d0;font-weight:700}
+  .idea-panel label{display:block;margin:9px 0 4px;color:#55627a;font-size:10.5px;font-weight:700}
+  .idea-panel textarea{min-height:78px;height:78px;font-family:inherit}
+  .idea-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
+  .idea-draft{margin-top:16px;padding-top:14px;border-top:1px solid #e7ebf2}
+  .idea-questions{padding:10px 13px;margin:8px 0;background:#fff8e8;border:1px solid #f2e2b8;border-radius:9px;color:#765b1e;font-size:11px;line-height:1.7}
+  .choice-group{padding:9px 0 11px;border-bottom:1px solid #edf0f5}
+  .choice-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
+  .choice-title{display:block;color:#34415b;font-size:11px;font-weight:700}
+  .choice-select-all{border:0;background:transparent;color:#526bd8;font:inherit;font-size:10px;cursor:pointer;padding:3px 5px}
+  .choice-options{display:flex;flex-direction:column;align-items:stretch;gap:5px}
+  .choice-option{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border:1px solid #e0e6f0;border-radius:8px;background:#fff;color:#52617a;font-size:10.5px;cursor:pointer}
+  .choice-option{width:100%;box-sizing:border-box}
+  .choice-option:has(input:checked){border-color:#9aa9ec;background:#f0f3ff;color:#4c63d0}
+  .choice-option input{accent-color:#526bd8;margin:0}
+  .idea-preview{max-height:250px;overflow:auto;margin:8px 0;padding:12px 14px;border:1px solid #e2e7f0;border-radius:10px;background:#fbfcfe;color:#34415b;font-size:11px;line-height:1.7}
+  .idea-preview h5{margin:0 0 5px;color:#25334d;font-size:12px}
+  .idea-preview p{margin:3px 0 9px;white-space:pre-wrap}
+  .idea-preview ul{margin:3px 0 9px;padding-left:18px}
+  .idea-preview li{margin:2px 0}
+  .idea-preview .preview-empty{color:#9a6a16;background:#fff8e8;border-radius:6px;padding:7px 9px}
+  .idea-confirm{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
+  .idea-confirm label{display:flex;align-items:center;gap:7px;margin:0;font-weight:500}
+  .idea-status{font-size:10.5px;color:#7c8799;line-height:1.6}
+  #specPanel[hidden],.idea-draft[hidden]{display:none!important}
   .dagwrap{border:1px solid #e7ebf2; border-radius:12px; box-shadow:inset 0 1px 4px rgba(27,41,68,.025)}
   .node rect{filter:drop-shadow(0 2px 2px rgba(30,45,75,.035))}
   .node:hover rect{filter:drop-shadow(0 4px 6px rgba(30,45,75,.13))}
@@ -744,21 +771,40 @@
       <div class="pane on" id="pane-spec">
         <div class="spec-entry card">
           <div class="spec-entry-head">
-            <div class="spec-entry-title"><b>设计规格输入</b><span>粘贴 Markdown / JSON，或选择内置样例开始解析</span></div>
+            <div class="spec-entry-title"><b>需求输入</b><span>可以先说想法，也可以直接提交已有规格</span></div>
             <div class="chips" id="exampleChips"></div>
           </div>
-          <textarea id="specText" placeholder="# 产品：示例产品&#10;## 项目目标&#10;描述目标用户和要解决的问题&#10;## 功能模块&#10;### 模块名称&#10;- 可独立验收的产品需求"></textarea>
-          <div class="spec-entry-foot">
-            <span class="hint">更换产品只需更换规格文本，无需修改工作流代码。</span>
-            <div class="spec-entry-actions"><button class="ghost" id="clearBtn">清空</button><button class="primary" id="runBtn">解析并分解</button></div>
+          <div class="entry-modes">
+            <button class="entry-mode on" id="ideaModeBtn" type="button">先说产品想法</button>
+            <button class="entry-mode" id="specModeBtn" type="button">我已有设计规格</button>
+          </div>
+          <div class="idea-panel" id="ideaPanel">
+            <label for="ideaText">你想做什么？</label>
+            <textarea id="ideaText" placeholder="例如：我想做一个点餐小程序，帮助附近上班族快速点餐。"></textarea>
+            <div class="idea-actions"><span class="idea-status" id="ideaDraftStatus">先写一句想法；之后通过选项补充，规格摘要会自动更新。</span><button class="primary" id="makeDraftBtn" type="button">整理并给出选项</button></div>
+            <div class="idea-draft" id="ideaDraftPanel" hidden>
+              <b>待确认的规格草稿</b>
+              <div id="ideaChoices"></div>
+              <div class="idea-questions" id="ideaQuestions" hidden></div>
+              <div class="idea-actions"><span class="idea-status">选项变化后，规格摘要会自动更新。</span></div>
+              <div class="idea-preview" id="ideaDraftPreview"></div>
+              <div class="idea-confirm"><label><input id="ideaConfirmCheck" type="checkbox">我已检查并确认草稿内容</label><button class="primary" id="ideaRunBtn" type="button" disabled>确认后进入任务分解</button></div>
+            </div>
+          </div>
+          <div id="specPanel" hidden>
+            <textarea id="specText" placeholder="# 产品：示例产品&#10;## 项目目标&#10;描述目标用户和要解决的问题&#10;## 功能模块&#10;### 模块名称&#10;- 可独立验收的产品需求"></textarea>
+            <div class="spec-entry-foot">
+              <span class="hint">更换产品只需更换规格文本，无需修改工作流代码。</span>
+              <div class="spec-entry-actions"><button class="ghost" id="clearBtn">清空</button><button class="primary" id="runBtn">解析并分解</button></div>
+            </div>
           </div>
         </div>
         <div class="empty welcome" id="specEmpty">
           <div class="welcome-copy">
             <div class="welcome-kicker"><i></i> SE WORKFLOW STUDIO</div>
-            <h2>从设计规格<br>生成开发任务计划</h2>
-            <p>把产品需求转化为可追溯的开发任务、依赖关系和执行批次。选择上方样例，或粘贴你自己的设计规格开始体验。</p>
-            <div class="welcome-pills"><span>Markdown / JSON</span><span>需求来源可追溯</span><span>支持离线演示</span></div>
+            <h2>从产品想法<br>生成开发任务计划</h2>
+            <p>先用自然语言描述想法，检查并确认规格草稿，再生成可追溯的开发任务、依赖关系和执行批次；也可直接使用 Markdown / JSON。</p>
+            <div class="welcome-pills"><span>自然语言草稿</span><span>Markdown / JSON</span><span>确认后再分解</span></div>
           </div>
           <div class="welcome-flow">
             <div class="welcome-flow-title"><b>工作流路径</b><span>3 个阶段</span></div>
@@ -820,6 +866,12 @@ const state = {
   selected: null, impactReqId: null, simIndex: -1, busy: false,
   projects: [], project: null, selectedContext: new Set(), chatBusy: false,
 };
+let ideaDraftBase = "";
+let ideaDraftCurrent = "";
+let ideaChoiceSchema = [];
+let ideaChoicesApplied = false;
+let ideaChoiceRevision = 0;
+let ideaApplyTimer = null;
 
 const KIND_COLOR = {
   contract:"#7c5cff", backend:"#2f6fed", frontend:"#0f9d8f",
@@ -885,8 +937,6 @@ async function boot(attempt = 0) {
         await run();
         if (qp.get("tab")) switchTab(qp.get("tab"));
       }
-    } else if (ex.examples[0]) {
-      loadExample(ex.examples[0].file);
     }
   } catch (e) {
     if (e.network && attempt < 20) {
@@ -907,12 +957,13 @@ function updateStrategyHint(list) {
 
 async function loadExample(file) {
   const data = await api("/api/example?file=" + encodeURIComponent(file));
+  setEntryMode("spec");
   $("#specText").value = data.text;
   document.querySelectorAll("#exampleChips .chip").forEach(c => c.classList.toggle("on", c.dataset.file === file));
 }
 
 /* ---------------- 运行 ---------------- */
-async function run() {
+async function run(requireCompleteSpec = false) {
   const text = $("#specText").value.trim();
   if (!text) return;
   if (state.busy) return;
@@ -924,6 +975,7 @@ async function run() {
       decompose: { granularity: $("#granularity").value },
       orchestrate: readOrchestrate(),
     };
+    if (requireCompleteSpec) payload.require_complete_spec = true;
     logEvent("info", "input", "提交", "规格已提交，等待解析");
     const data = await api("/api/run", payload);
     if (!data.ok) { logEvent("error", "run", "失败", data.error || "未知错误"); setBusy(false); return; }
@@ -932,9 +984,17 @@ async function run() {
     saveWorkflow();
   } catch (e) {
     logEvent("error", "run", "失败", e.message);
+    if (requireCompleteSpec) {
+      setEntryMode("idea");
+      ideaChoicesApplied = false;
+      $("#ideaConfirmCheck").checked = false;
+      $("#ideaConfirmCheck").disabled = true;
+      $("#ideaRunBtn").disabled = true;
+      $("#ideaDraftStatus").textContent = e.message + " 请调整上方选项；规格摘要会自动更新。";
+    }
     if (e.network) {
       logEvent("warn", "run", "重试", "3 秒后自动重试一次，无需刷新页面");
-      setTimeout(() => run(), 3000);
+      setTimeout(() => run(requireCompleteSpec), 3000);
     }
   } finally {
     setBusy(false);
@@ -971,7 +1031,114 @@ function updateLlmBadge(llm) {
 function setBusy(b) {
   state.busy = b;
   $("#runBtn").disabled = b;
+  $("#makeDraftBtn").disabled = b;
+  $("#ideaRunBtn").disabled = b || !$("#ideaConfirmCheck").checked;
   $("#runBtn").innerHTML = b ? '<span class="spinner"></span> 处理中…' : "解析并分解";
+}
+
+function setEntryMode(mode) {
+  const idea = mode === "idea";
+  $("#ideaPanel").hidden = !idea;
+  $("#specPanel").hidden = idea;
+  $("#ideaModeBtn").classList.toggle("on", idea);
+  $("#specModeBtn").classList.toggle("on", !idea);
+}
+
+async function makeIdeaDraft() {
+  const idea = $("#ideaText").value.trim();
+  const status = $("#ideaDraftStatus");
+  if (!idea) { status.textContent = "先写一句你想做什么。"; $("#ideaText").focus(); return; }
+  if (state.busy) return;
+  $("#makeDraftBtn").disabled = true;
+  status.textContent = "正在快速生成选项…";
+  try {
+    const data = await api("/api/draft-spec", {idea});
+    ideaDraftBase = data.draft_markdown || "";
+    ideaDraftCurrent = ideaDraftBase;
+    ideaChoiceSchema = data.choice_questions || [];
+    ideaChoicesApplied = false;
+    ideaChoiceRevision++;
+    renderIdeaChoices(ideaChoiceSchema);
+    $("#ideaDraftPreview").innerHTML = renderIdeaPreview(data.preview);
+    const warning = data.warning ? " · " + esc(data.warning) : "";
+    $("#ideaQuestions").innerHTML = "<b>" + esc(data.mode || "规则模板") + warning + "</b><div>请通过上方选项补充信息；未选择的内容不会被当成已确认需求。</div>";
+    $("#ideaQuestions").hidden = false;
+    $("#ideaDraftPanel").hidden = false;
+    $("#ideaConfirmCheck").checked = false;
+    $("#ideaConfirmCheck").disabled = true;
+    $("#ideaRunBtn").disabled = true;
+    status.textContent = "选择主要用户、第一版功能、平台和范围；预览会随选择自动更新。";
+  } catch (e) {
+    status.textContent = e.message;
+  } finally {
+    $("#makeDraftBtn").disabled = false;
+  }
+}
+
+function renderIdeaChoices(groups) {
+  $("#ideaChoices").innerHTML = groups.map(group => {
+    const kind = group.type === "multiple" ? "checkbox" : "radio";
+    const options = (group.options || []).map(value => "<label class=\"choice-option\"><input type=\"" + kind + "\" name=\"idea-" + esc(group.key) + "\" value=\"" + esc(value) + "\"><span>" + esc(value) + "</span></label>").join("");
+    const selectAll = group.type === "multiple" ? "<button class=\"choice-select-all\" type=\"button\" data-select-all=\"" + esc(group.key) + "\">一键全选</button>" : "";
+    return "<section class=\"choice-group\"><div class=\"choice-head\"><span class=\"choice-title\">" + esc(group.title) + "</span>" + selectAll + "</div><div class=\"choice-options\">" + options + "</div></section>";
+  }).join("");
+}
+
+function updateSelectAllLabels() {
+  $("#ideaChoices").querySelectorAll("[data-select-all]").forEach(button => {
+    const inputs = Array.from(document.querySelectorAll("input[name=\"idea-" + button.dataset.selectAll + "\"]"))
+      .filter(input => input.value !== "暂不确定");
+    button.textContent = inputs.length && inputs.every(input => input.checked) ? "取消全选" : "一键全选";
+  });
+}
+
+function readIdeaChoices() {
+  const result = {};
+  ideaChoiceSchema.forEach(group => {
+    const selected = Array.from(document.querySelectorAll("input[name=\"idea-" + group.key + "\"]:checked")).map(input => input.value);
+    result[group.key] = group.type === "multiple" ? selected : (selected[0] || "");
+  });
+  return result;
+}
+
+function renderIdeaPreview(spec) {
+  if (!spec) return "<div class=\"preview-empty\">正在生成规格摘要…</div>";
+  const reqs = spec.requirements || [];
+  const groups = {};
+  reqs.forEach(r => { (groups[r.module || "功能"] ||= []).push(r); });
+  const features = Object.entries(groups).map(([name, items]) => "<h5>" + esc(name) + "</h5><ul>" + items.map(r => "<li>" + esc(r.text) + "</li>").join("") + "</ul>").join("");
+  const constraints = (spec.constraints || []).length ? "<h5>平台与范围</h5><ul>" + spec.constraints.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>" : "";
+  return "<h5>" + esc(spec.product || "未命名产品") + "</h5><p>目标：" + esc(spec.goal || "尚未填写") + "</p>" +
+    (features || "<div class=\"preview-empty\">还没有确定的第一版功能。请勾选上方功能选项，系统会自动写入规格。</div>") + constraints;
+}
+
+async function applyIdeaChoices() {
+  const status = $("#ideaDraftStatus");
+  const revision = ++ideaChoiceRevision;
+  try {
+    const data = await api("/api/confirm-spec-draft", {
+      idea: $("#ideaText").value.trim(), base_markdown: ideaDraftBase, selections: readIdeaChoices(),
+    });
+    if (revision !== ideaChoiceRevision) return;
+    ideaDraftCurrent = data.draft_markdown || "";
+    $("#ideaDraftPreview").innerHTML = renderIdeaPreview(data.preview);
+    ideaChoicesApplied = true;
+    $("#ideaConfirmCheck").checked = false;
+    $("#ideaConfirmCheck").disabled = !data.can_confirm;
+    $("#ideaRunBtn").disabled = true;
+    status.textContent = data.can_confirm
+      ? "规格已按选择更新。请确认后勾选，再进入任务分解。"
+      : "还没有明确的功能需求。勾选至少一项第一版功能后，规格会自动更新。";
+  } catch (e) { status.textContent = e.message; }
+}
+
+function confirmIdeaDraft() {
+  if (!$("#ideaConfirmCheck").checked || !ideaChoicesApplied) return;
+  const draft = ideaDraftCurrent.trim();
+  if (!draft) { $("#ideaDraftStatus").textContent = "草稿为空，请先补充规格内容。"; return; }
+  $("#specText").value = draft;
+  setEntryMode("spec");
+  run(true);
 }
 
 function pushHistory(data) {
@@ -1504,7 +1671,41 @@ $("#chatInput").addEventListener("input", updateChatButton);
 $("#chatInput").addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") sendProjectMessage(); });
 $("#closePreviewBtn").onclick = () => $("#filePreview").classList.remove("on");
 $("#filePreview").onclick = e => { if (e.target.id === "filePreview") $("#filePreview").classList.remove("on"); };
-$("#runBtn").onclick = run;
+$("#ideaModeBtn").onclick = () => setEntryMode("idea");
+$("#specModeBtn").onclick = () => setEntryMode("spec");
+$("#makeDraftBtn").onclick = makeIdeaDraft;
+$("#ideaText").addEventListener("input", () => {
+  ideaChoiceRevision++;
+  clearTimeout(ideaApplyTimer);
+  ideaDraftBase = ""; ideaDraftCurrent = ""; ideaChoicesApplied = false;
+  $("#ideaDraftPanel").hidden = true;
+  $("#ideaConfirmCheck").checked = false;
+  $("#ideaConfirmCheck").disabled = true;
+  $("#ideaRunBtn").disabled = true;
+});
+$("#ideaConfirmCheck").onchange = () => { $("#ideaRunBtn").disabled = !$("#ideaConfirmCheck").checked || state.busy; };
+$("#ideaChoices").onchange = () => {
+  updateSelectAllLabels();
+  ideaChoiceRevision++;
+  clearTimeout(ideaApplyTimer);
+  ideaChoicesApplied = false;
+  $("#ideaConfirmCheck").checked = false;
+  $("#ideaConfirmCheck").disabled = true;
+  $("#ideaRunBtn").disabled = true;
+  $("#ideaDraftStatus").textContent = "正在根据你的选择更新规格…";
+  ideaApplyTimer = setTimeout(applyIdeaChoices, 180);
+};
+$("#ideaChoices").onclick = e => {
+  const button = e.target.closest("[data-select-all]");
+  if (!button) return;
+  const inputs = Array.from(document.querySelectorAll("input[name=\"idea-" + button.dataset.selectAll + "\"]"));
+  const selectable = inputs.filter(input => input.value !== "暂不确定");
+  const select = !(selectable.length && selectable.every(input => input.checked));
+  inputs.forEach(input => { input.checked = select && input.value !== "暂不确定"; });
+  $("#ideaChoices").dispatchEvent(new Event("change", {bubbles:true}));
+};
+$("#ideaRunBtn").onclick = confirmIdeaDraft;
+$("#runBtn").onclick = () => run(false);
 $("#rePlanBtn").onclick = rePlan;
 $("#clearBtn").onclick = () => { $("#specText").value = ""; };
 $("#loghead").onclick = () => $("#logbar").classList.toggle("collapsed");
@@ -1512,7 +1713,12 @@ $("#st1").onclick = () => switchTab("spec");
 $("#st2").onclick = () => switchTab("tasks");
 $("#st3").onclick = () => switchTab("plan");
 document.addEventListener("keydown", e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") run();
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    if ($("#ideaPanel").hidden) run(false);
+    else if ($("#ideaConfirmCheck").checked) confirmIdeaDraft();
+    else if (!$("#ideaDraftPanel").hidden) applyIdeaChoices();
+    else makeIdeaDraft();
+  }
 });
 boot();
 loadProjects();
