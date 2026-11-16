@@ -107,12 +107,17 @@ class Pipeline:
         coverage = check_coverage(tasks, spec)
         log.push(
             "quality",
-            "info" if coverage["coverage_ratio"] >= 0.9 else "warn",
-            f"需求覆盖率 {int(coverage['coverage_ratio'] * 100)}%（{coverage['covered_requirements']}/{coverage['total_requirements']}）"
+            "info" if coverage["executable_coverage_ratio"] >= 0.9 else "warn",
+            f"需求映射覆盖率 {int(coverage['coverage_ratio'] * 100)}%（{coverage['covered_requirements']}/{coverage['total_requirements']}），"
+            f"可执行覆盖率 {int(coverage['executable_coverage_ratio'] * 100)}%（{coverage['executable_covered_requirements']}/{coverage['total_requirements']}）"
             + (f"，未覆盖：{', '.join(coverage['missing_requirements'])}" if coverage["missing_requirements"] else ""),
         )
+        if coverage["pending_only_requirements"]:
+            log.push("quality", "warn", "仅由待确认任务支撑的需求：" + ", ".join(coverage["pending_only_requirements"]))
         if coverage["duplicate_tasks"]:
             log.push("quality", "warn", "疑似重复任务：" + "；".join(coverage["duplicate_tasks"]))
+        if coverage["missing_deliverables"]:
+            log.push("quality", "warn", "缺少交付物的任务：" + "、".join(coverage["missing_deliverables"]))
         if coverage["missing_criteria"]:
             log.push("quality", "warn", "缺少验收标准的任务：" + "、".join(coverage["missing_criteria"]))
 

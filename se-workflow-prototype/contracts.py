@@ -312,10 +312,20 @@ def normalize_task_status(tasks: List[Task], spec: DesignSpec) -> None:
 
 
 def check_coverage(tasks: List[Task], spec: DesignSpec) -> Dict[str, Any]:
-    """需求覆盖率检查（分工③的交付物之一）。"""
-    covered = {ref.req_id for t in tasks for ref in t.source_refs}
+    """同时检查需求映射覆盖、可执行覆盖和任务字段质量。"""
     all_reqs = spec.requirement_ids()
+    valid_reqs = set(all_reqs)
+    covered = {ref.req_id for t in tasks for ref in t.source_refs if ref.req_id in valid_reqs}
+    executable_covered = {
+        ref.req_id for t in tasks if t.status in ("ready", "done")
+        for ref in t.source_refs if ref.req_id in valid_reqs
+    }
+    pending_covered = {
+        ref.req_id for t in tasks if t.status == "pending"
+        for ref in t.source_refs if ref.req_id in valid_reqs
+    }
     missing = [r for r in all_reqs if r not in covered]
+    pending_only = [r for r in all_reqs if r in pending_covered and r not in executable_covered]
     # 重复检查：同模块 + 同标题归一化后出现多次
     seen: Dict[str, str] = {}
     duplicates: List[str] = []
@@ -326,14 +336,20 @@ def check_coverage(tasks: List[Task], spec: DesignSpec) -> Dict[str, Any]:
         else:
             seen[key] = t.task_id
     no_criteria = [t.task_id for t in tasks if not t.acceptance_criteria]
+    no_deliverable = [t.task_id for t in tasks if not t.deliverable.strip()]
     pending = [t.task_id for t in tasks if t.status == "pending"]
     ratio = round(len(covered & set(all_reqs)) / len(all_reqs), 3) if all_reqs else 0.0
+    executable_ratio = round(len(executable_covered & valid_reqs) / len(all_reqs), 3) if all_reqs else 0.0
     return {
         "total_requirements": len(all_reqs),
         "covered_requirements": len(covered & set(all_reqs)),
         "coverage_ratio": ratio,
+        "executable_covered_requirements": len(executable_covered & valid_reqs),
+        "executable_coverage_ratio": executable_ratio,
         "missing_requirements": missing,
+        "pending_only_requirements": pending_only,
         "duplicate_tasks": duplicates,
+        "missing_deliverables": no_deliverable,
         "missing_criteria": no_criteria,
         "pending_tasks": pending,
     }

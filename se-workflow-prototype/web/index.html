@@ -1043,13 +1043,18 @@ function renderSpec() {
     </div>
 
     <div class="card">
-      <h4>需求覆盖检查<span class="sub">分工③的交付物：覆盖率 / 重复 / 缺验收标准</span></h4>
+      <h4>需求覆盖检查<span class="sub">映射覆盖与可执行覆盖分开统计，并列出待确认和缺失字段</span></h4>
       <div class="stats">
-        <div class="stat"><b>${Math.round((state.coverage?.coverage_ratio || 0) * 100)}%</b><span>需求覆盖率</span></div>
+        <div class="stat"><b>${Math.round((state.coverage?.coverage_ratio || 0) * 100)}%</b><span>需求映射覆盖率</span></div>
+        <div class="stat"><b>${Math.round((state.coverage?.executable_coverage_ratio || 0) * 100)}%</b><span>可执行覆盖率</span></div>
         <div class="stat"><b>${state.coverage?.missing_requirements?.length || 0}</b><span>未覆盖需求</span></div>
+        <div class="stat"><b>${state.coverage?.pending_only_requirements?.length || 0}</b><span>仅待确认需求</span></div>
         <div class="stat"><b>${state.coverage?.duplicate_tasks?.length || 0}</b><span>疑似重复任务</span></div>
         <div class="stat"><b>${state.coverage?.pending_tasks?.length || 0}</b><span>待确认任务</span></div>
       </div>
+      ${(state.coverage?.pending_only_requirements || []).length ? `<div class="banner warn" style="margin-top:10px">仅由待确认任务支撑：${state.coverage.pending_only_requirements.map(esc).join("、")}</div>` : ""}
+      ${(state.coverage?.missing_deliverables || []).length ? `<div class="banner warn" style="margin-top:10px">缺少交付物：${state.coverage.missing_deliverables.map(esc).join("、")}</div>` : ""}
+      ${(state.coverage?.missing_criteria || []).length ? `<div class="banner warn" style="margin-top:10px">缺少验收标准：${state.coverage.missing_criteria.map(esc).join("、")}</div>` : ""}
       ${(state.coverage?.duplicate_tasks || []).length ? `<div class="banner warn" style="margin-top:10px">${state.coverage.duplicate_tasks.map(esc).join("；")}</div>` : ""}
     </div>`;
 

@@ -20,7 +20,7 @@ sys.path.insert(0, ROOT)
 os.environ["SE_WORKFLOW_OFFLINE"] = "1"
 
 from config import DecomposeConfig, OrchestrateConfig  # noqa: E402
-from contracts import validate_tasks  # noqa: E402
+from contracts import check_coverage, validate_tasks  # noqa: E402
 from graph import TaskGraph  # noqa: E402
 from pipeline import Pipeline  # noqa: E402
 from spec_parser import parse_spec  # noqa: E402
@@ -81,6 +81,31 @@ class TestPipeline(unittest.TestCase):
     def test_contract_validation_passes(self):
         r = self.p.run(read("spec_case_b.md"))
         self.assertTrue(r["plan"]["valid"], r["plan"]["errors"])
+
+    def test_pending_only_requirement_is_not_counted_as_executable_coverage(self):
+        spec = parse_spec(read("spec_case_a.md"))
+        result = self.p.run(read("spec_case_a.md"))
+        tasks = _rebuild(result["tasks"])
+        req_id = spec.requirements[0].req_id
+        linked = [t for t in tasks if any(ref.req_id == req_id for ref in t.source_refs)]
+        self.assertTrue(linked, f"样例中应有任务引用 {req_id}")
+        for task in linked:
+            task.status = "pending"
+
+        report = check_coverage(tasks, spec)
+        self.assertEqual(report["coverage_ratio"], 1.0)
+        self.assertLess(report["executable_coverage_ratio"], report["coverage_ratio"])
+        self.assertIn(req_id, report["pending_only_requirements"])
+
+    def test_coverage_report_lists_missing_deliverables(self):
+        spec = parse_spec(read("spec_case_a.md"))
+        result = self.p.run(read("spec_case_a.md"))
+        tasks = _rebuild(result["tasks"])
+        target = next(t for t in tasks if t.status == "ready")
+        target.deliverable = ""
+
+        report = check_coverage(tasks, spec)
+        self.assertIn(target.task_id, report["missing_deliverables"])
 
     def test_cycle_is_blocked(self):
         r = self.p.run(read("spec_case_a.md"))
