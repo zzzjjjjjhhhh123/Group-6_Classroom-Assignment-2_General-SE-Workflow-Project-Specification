@@ -17,6 +17,10 @@ from typing import Any, Dict, List
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
 
+# 服务默认端口：app.py 与 start.bat 统一引用此处，避免多处硬编码对不上。
+# 与《项目说明书》7.1 的约定地址 http://127.0.0.1:8000 保持一致。
+SERVER_PORT = 8000
+
 # 任务粒度 → 是否给每个需求单独出前端任务、是否拆契约任务、估算缩放
 GRANULARITY_PRESETS = {
     "coarse": {
