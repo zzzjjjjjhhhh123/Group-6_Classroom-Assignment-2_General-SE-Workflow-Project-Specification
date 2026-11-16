@@ -1,8 +1,19 @@
-"""Turn a short product idea into an editable, user-confirmed DesignSpec draft."""
+"""Turn a short product idea into an editable, user-confirmed DesignSpec draft.
+
+两条路径：
+1. 模型路径（主）：把想法交给 LLM 扩成「产品名 / 目标 / 模块 / 需求 / 约束 / 验收」，
+   支持任意领域——不依赖行业关键词表。产出仍是 Markdown 草稿，用户确认后才算数。
+2. 快速模板（兜底）：未配置模型或调用失败时，只做结构引导 + 让用户勾选，
+   绝不替用户编造功能。
+"""
 from __future__ import annotations
 
+import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from config import LLMConfig
+from llm import DeepSeekClient, LLMError
 
 
 def draft_from_idea(idea: str, details: str = "") -> Dict[str, Any]:
@@ -81,6 +92,131 @@ def classify_idea(idea: str) -> Dict[str, Any]:
     }
 
 
+DRAFT_SYSTEM = """你是资深产品经理。把用户一句话想法扩展成一份可执行的产品设计规格，只输出 JSON。
+
+字段：
+product：产品名，20 字内，不要带书名号。
+goal：一句话目标，含目标用户与核心价值。
+modules：数组，6–8 个，每项 {"name": 模块名, "summary": 一句话说明, "requirements": [{"text": 需求, "priority": "P0|P1|P2"}]}。
+constraints：数组，技术或范围约束，2–4 条。
+acceptance：数组，整体验收条件，3–5 条。
+questions：数组，只列真正需要用户拍板的点，0–3 条；不要问能自己判断的事。
+users：数组，2–4 类主要使用者。
+platforms：数组，1–3 个建议平台。
+
+硬性要求：
+1. 每个模块 3–4 条需求，需求必须写成「谁 + 对什么对象 + 做什么 + 得到什么结果」，可被判定是否完成。
+2. 严禁通用空话：不许出现「浏览核心内容」「提交核心操作」「查看处理进度」「管理个人信息」「注册或登录」这类不针对本产品的表述。
+3. 模块名必须来自这段想法里的业务对象（例如"宠物档案""疫苗记录""寄养预约"），不能是"用户模块""核心模块""业务模块"。
+4. 想法里没提到的功能不要凭空加；确实需要但没提的，写进 questions 让用户确认。
+5. 优先级只用 P0/P1/P2：P0 是本产品不做就不能用的，P1 是首版应有，P2 是可延后。"""
+
+# 用户最容易被"套模板"的地方：这些空话一旦占比过高，说明模型没读懂想法
+GENERIC_PHRASES = ("浏览核心内容", "提交核心操作", "查看处理进度", "管理个人信息", "核心内容或服务")
+MODULE_NOISE_RE = re.compile(r"^\s*(?:\d{1,2}\s*[.、)）]|[（(]\s*\d{1,2}\s*[)）]|[一二三四五六七八九十]{1,3}\s*[、.）)])\s*")
+
+
+def draft_from_idea_llm(idea: str, details: str = "", llm_cfg: Optional[LLMConfig] = None) -> Dict[str, Any]:
+    """模型路径：任意领域想法 → 结构化规格草稿。
+
+    失败一律抛 LLMError（由调用方决定是否降级到快速模板），不返回半成品。
+    """
+    idea = str(idea or "").strip()
+    details = str(details or "").strip()
+    if len(idea) < 3:
+        raise ValueError("请至少用几个字描述你想做什么")
+    if len(idea) > 4000 or len(details) > 6000:
+        raise ValueError("想法或补充信息太长，请缩短后再试")
+    if llm_cfg is None or not llm_cfg.available:
+        raise LLMError("未配置 DEEPSEEK_API_KEY，无法用模型生成规格")
+
+    client = DeepSeekClient(llm_cfg)
+    user = json.dumps({"idea": idea, "details": details}, ensure_ascii=False)
+    data = client.chat_json(DRAFT_SYSTEM, user)
+    if isinstance(data, dict) and isinstance(data.get("spec"), dict):
+        data = data["spec"]
+    if not isinstance(data, dict):
+        raise LLMError("模型返回的不是规格对象")
+
+    product = _string(data.get("product"), 40) or _guess_product(idea)
+    goal = _string(data.get("goal"), 1000) or idea
+    modules = _modules(data.get("modules"))
+    for module in modules:
+        module["name"] = MODULE_NOISE_RE.sub("", module["name"]).strip() or "功能模块"
+    modules = _clean_modules(modules)
+    total = sum(len(m["requirements"]) for m in modules)
+
+    if len(modules) < 3 or total < 8:
+        raise LLMError(f"模型只给出 {len(modules)} 个模块、{total} 条需求，覆盖不足，已退回模板")
+    generic = sum(1 for m in modules for r in m["requirements"] if any(p in r["text"] for p in GENERIC_PHRASES))
+    if generic > max(1, total // 3):
+        raise LLMError(f"{generic}/{total} 条需求是通用空话，没有针对这个想法，已退回模板")
+
+    non_functional = _strings(data.get("non_functional"), 6, 200)
+    constraints = _strings(data.get("constraints"), 6, 200)
+    acceptance = _strings(data.get("acceptance"), 8, 200)
+    questions = _strings(data.get("questions"), 5, 300)
+    users = _strings(data.get("users"), 5, 40)
+    platforms = _strings(data.get("platforms"), 4, 30)
+
+    if not acceptance:
+        acceptance = ["按模块逐条走查，每条 P0 需求都能在界面上被验证", "换一个完全不相关领域的产品规格，本流程仍可直接运行"]
+    if not questions:
+        questions = ["请检查模块划分是否覆盖了你想做的事情；没有的请补，多余的请删。"]
+
+    markdown = _to_markdown(product, goal, modules, non_functional, constraints, acceptance)
+    return {
+        "ok": True,
+        "mode": "模型生成",
+        "source": "llm",
+        "warning": "",
+        "draft_markdown": markdown,
+        "questions": questions,
+        "choice_questions": _llm_choice_questions(users, platforms),
+        "has_requirements": True,
+        "stats": {"modules": len(modules), "requirements": total},
+        "notice": f"已按你的描述生成 {len(modules)} 个模块、{total} 条需求。请确认范围后再运行——模型没读到的功能不会自己补。",
+    }
+
+
+def _clean_modules(modules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """去掉空模块、同模块内重复需求，并统一优先级写法。"""
+    out: List[Dict[str, Any]] = []
+    for module in modules:
+        seen = set()
+        reqs = []
+        for r in module["requirements"]:
+            text = re.sub(r"^\s*[\[（(]\s*P[0-2]\s*[\]）)]\s*", "", r["text"]).strip()
+            text = re.sub(r"^P[0-2]\s*[:：]\s*", "", text).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            reqs.append({"text": text, "priority": r["priority"]})
+        if reqs:
+            out.append({"name": module["name"], "requirements": reqs})
+    return out
+
+
+def _llm_choice_questions(users: List[str], platforms: List[str]) -> List[Dict[str, Any]]:
+    """模型路径下只问"你确认哪些"，不再让用户从行业话术里挑功能。"""
+    questions: List[Dict[str, Any]] = []
+    if users:
+        questions.append({"key": "users", "title": "主要使用者是这些吗？（单选，可跳过）", "type": "single", "options": users[:5]})
+    questions.append({
+        "key": "platform",
+        "title": "先做在哪种平台？（单选，可跳过）",
+        "type": "single",
+        "options": platforms[:4] + ["暂不确定"] if platforms else ["微信小程序", "手机 App", "Web 网站", "暂不确定"],
+    })
+    questions.append({
+        "key": "scope",
+        "title": "第一版范围偏向哪种？（可多选，可跳过）",
+        "type": "multiple",
+        "options": ["只做最核心的一条主线流程", "先给一个小范围真实用户试用", "包含通知/消息提醒", "暂不确定"],
+    })
+    return questions
+
+
 def choice_questions(idea: str) -> List[Dict[str, Any]]:
     """Offer topic-aware selectable clarifications; suggestions are never assumptions."""
     profile = classify_idea(idea)
@@ -92,13 +228,22 @@ def choice_questions(idea: str) -> List[Dict[str, Any]]:
     ]
 
 
-def apply_choice_selections(idea: str, base_markdown: str, selections: Dict[str, Any]) -> str:
-    """Merge only options explicitly chosen by the user into the draft."""
-    allowed = {q["key"]: set(q["options"]) for q in choice_questions(idea)}
-    users = _selected(selections.get("users"), allowed["users"])
-    platform = _selected(selections.get("platform"), allowed["platform"])
-    features = _selected_list(selections.get("features"), allowed["features"])
-    scope = _selected_list(selections.get("scope"), allowed["scope"])
+def apply_choice_selections(
+    idea: str,
+    base_markdown: str,
+    selections: Dict[str, Any],
+    questions: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Merge only options explicitly chosen by the user into the draft.
+
+    questions 由前端回传：模型路径的候选项是动态生成的，不能再用行业关键词模板去校验。
+    """
+    schema = questions if questions else choice_questions(idea)
+    allowed = {q["key"]: set(q.get("options") or []) for q in schema if isinstance(q, dict) and q.get("key")}
+    users = _selected(selections.get("users"), allowed.get("users", set()))
+    platform = _selected(selections.get("platform"), allowed.get("platform", set()))
+    features = _selected_list(selections.get("features"), allowed.get("features", set()))
+    scope = _selected_list(selections.get("scope"), allowed.get("scope", set()))
 
     markdown = base_markdown.strip() or _to_markdown(_guess_product(idea), idea, [], [], [], [])
     if users:
@@ -144,8 +289,10 @@ def _fallback(idea: str, details: str) -> Dict[str, Any]:
 
 
 def _guess_product(idea: str) -> str:
-    match = re.search(r"(?:想做|要做|做|开发|建设|创建)\s*(?:一个|一款|一套)?\s*([^，。；,;\n]{2,32})", idea)
+    # 冒号/破折号之后通常是需求罗列，产品名只取前面的部分。
+    match = re.search(r"(?:想做|要做|做|开发|建设|创建)\s*(?:一个|一款|一套)?\s*([^，。；,;\n：:]{2,32})", idea)
     guess = match.group(1).strip() if match else idea.strip()
+    guess = re.split(r"[：:，。；,;\n]", guess)[0].strip()
     return guess[:40] or "待命名产品"
 
 

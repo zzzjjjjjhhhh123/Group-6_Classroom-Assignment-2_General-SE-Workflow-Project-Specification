@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import threading
+import time
 import traceback
 import uuid
 import datetime
@@ -32,11 +33,13 @@ from config import (
     SERVER_PORT,
     STRATEGIES,
     DecomposeConfig,
+    LLMConfig,
     OrchestrateConfig,
     load_llm_config,
 )
 from pipeline import Pipeline, simulate
-from idea_to_spec import apply_choice_selections, draft_from_idea
+from idea_to_spec import apply_choice_selections, draft_from_idea, draft_from_idea_llm
+from llm import LLMError
 from spec_parser import parse_spec
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -46,6 +49,31 @@ PROJECTS = os.path.join(ROOT, "projects")
 
 _LOCK = threading.Lock()
 _PIPELINE = Pipeline()
+
+
+def build_draft(idea: str, details: str = "") -> dict:
+    """想法 → 规格草稿：模型优先（任意领域都能进），失败退回快速模板并说明原因。"""
+    cfg = _PIPELINE.llm_cfg
+    if cfg.available:
+        # 入口要"敢等"一点，但别把浏览器拖死：单独给 45s 上限
+        quick = LLMConfig(api_key=cfg.api_key, base_url=cfg.base_url, model=cfg.model, timeout=45, enabled=cfg.enabled)
+        started = time.time()
+        try:
+            draft = draft_from_idea_llm(idea, details, quick)
+            draft["elapsed"] = round(time.time() - started, 1)
+            return draft
+        except ValueError:
+            raise
+        except Exception as exc:  # 模型层任何异常都不该让入口 500：一律退回模板
+            draft = draft_from_idea(idea, details)
+            draft["mode"] = "快速模板（模型降级）"
+            draft["warning"] = f"模型生成失败，已退回快速模板：{exc}"
+            return draft
+    draft = draft_from_idea(idea, details)
+    if not draft.get("warning"):
+        draft["warning"] = "未配置模型，当前为快速模板：只做结构引导，不替你编造功能。"
+    return draft
+
 
 
 def list_samples():
@@ -266,7 +294,7 @@ class Handler(BaseHTTPRequestHandler):
                 idea = str(body.get("idea") or "")
                 details = str(body.get("details") or "")
                 try:
-                    draft = draft_from_idea(idea, details)
+                    draft = build_draft(idea, details)
                     draft["preview"] = parse_spec(draft["draft_markdown"]).to_dict()
                     return self._json(draft)
                 except ValueError as exc:
@@ -278,7 +306,12 @@ class Handler(BaseHTTPRequestHandler):
                 selections = body.get("selections") or {}
                 if not idea or not isinstance(selections, dict):
                     return self._json({"ok": False, "error": "想法或选项无效"}, 400)
-                markdown = apply_choice_selections(idea, base_markdown, selections)
+                markdown = apply_choice_selections(
+                    idea,
+                    base_markdown,
+                    selections,
+                    body.get("choice_questions") if isinstance(body.get("choice_questions"), list) else None,
+                )
                 parsed = parse_spec(markdown)
                 blocking = [q.to_dict() for q in parsed.questions if q.severity == "blocking"]
                 return self._json({"ok": True, "draft_markdown": markdown, "preview": parsed.to_dict(), "can_confirm": not blocking, "blocking_questions": blocking})
@@ -301,6 +334,20 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": False, "error": "工作流快照过大"}, 413)
                 project = _read_project(pid)
                 project["workflow"] = wf
+                project["updated_at"] = _now()
+                _save_project(project)
+                return self._json({"ok": True})
+
+            if path == "/api/project/entry":
+                # 输入区草稿按项目存：切项目时各自恢复，互不覆盖
+                pid = _project_id(body.get("project_id"))
+                entry = body.get("entry")
+                if not isinstance(entry, dict):
+                    return self._json({"ok": False, "error": "entry 数据无效"}, 400)
+                if len(json.dumps(entry, ensure_ascii=False).encode("utf-8")) > 2_000_000:
+                    return self._json({"ok": False, "error": "输入草稿过大"}, 413)
+                project = _read_project(pid)
+                project["entry"] = entry
                 project["updated_at"] = _now()
                 _save_project(project)
                 return self._json({"ok": True})
