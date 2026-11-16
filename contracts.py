@@ -5,6 +5,14 @@
 2. 所有对象可 to_dict()，前端直接拿到稳定 JSON；
 3. 校验规则集中在此：task_id 唯一、depends_on 指向存在、source_refs 必须指向 spec 中真实存在的需求，
    否则该任务状态置为 pending —— 不允许"没有出处却看起来已确认"的任务进入计划。
+
+【契约冻结声明 · Owner：陈欣然（①数据契约与服务骨架）】
+本文件的数据类、枚举、to_dict 结构为已冻结契约（SPEC_VERSION = "1.0"）：
+- 各角色均以本文件字段为准开发，不得在各自模块中自行拼装同义字段；
+- 新增字段 / 改字段名 / 改类型，必须先经①确认并同步更新本文件与前端取值，
+  然后在群里公示，避免前后端字段对不上；
+- check_coverage / validate_tasks / normalize_task_status / pending_reason 的
+  质量判定口径归③维护，改口径前请先与③对齐（见分工与文件对照表 · 交叉区）。
 """
 from __future__ import annotations
 
@@ -140,14 +148,14 @@ class Task:
     kind: str = "backend"
     deliverable: str = ""
     acceptance_criteria: List[str] = field(default_factory=list)
-    depends_on: List[str] = field(default_factory=list)
-    suggested_role: str = "backend"
-    estimate_days: float = 1.0
-    priority: str = "P1"
-    source_refs: List[SourceRef] = field(default_factory=list)
-    status: str = "ready"
-    pending_reason: str = ""
-    origin: str = "rule"  # rule | llm | human
+    depends_on: List[str] = field(default_factory=list)   # 依赖的 task_id，必须指向已存在任务
+    suggested_role: str = "backend"                        # 建议角色，取值限定 ROLES
+    estimate_days: float = 1.0                             # 人日估算，约束范围 0.5–2（DecomposeConfig 收敛）
+    priority: str = "P1"                                   # P0 / P1 / P2
+    source_refs: List[SourceRef] = field(default_factory=list)  # 规格出处；为空则任务置 pending
+    status: str = "ready"                                  # TASK_STATUS：ready/pending/blocked/done
+    pending_reason: str = ""                               # 待确认原因（status=pending 时必填，口径归③）
+    origin: str = "rule"  # rule | llm | human             # 任务来源，人工修改后置 human
 
     def to_dict(self) -> Dict[str, Any]:
         return {
