@@ -354,9 +354,14 @@
   .spec-entry-foot{min-height:31px}
   .spec-entry-actions{display:flex;align-items:center;gap:7px}
   .spec-entry-actions button{height:30px;padding:5px 11px;font-size:10.5px}
-  .entry-modes{display:flex;gap:7px;margin:12px 0 8px}
-  .entry-mode{border:1px solid #e0e6f0;background:#f8f9fc;color:#66738a;border-radius:8px;padding:7px 12px;font:inherit;font-size:11px;cursor:pointer}
+  .entry-modes{display:flex;gap:7px;margin:12px 0 8px}  .entry-mode{border:1px solid #e0e6f0;background:#f8f9fc;color:#66738a;border-radius:8px;padding:7px 12px;font:inherit;font-size:11px;cursor:pointer}
   .entry-mode.on{border-color:#cbd5fa;background:#eef1ff;color:#4c63d0;font-weight:700}
+  .entry-scope{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:10px;padding:7px 11px;border:1px solid #dfe8f8;border-radius:8px;background:#f4f7fd;color:#4a5875;font-size:11px}
+  .entry-scope b{color:#2f4b86;font-weight:700}
+  .entry-scope.warn{border-color:#f3ddb4;background:#fff8ea;color:#8a5c14}
+  .entry-scope.warn b{color:#8a5c14}
+  .entry-scope .scope-tip{color:#8a94a8}
+  .entry-scope.warn .scope-tip{color:#a4792f}
   .idea-panel label{display:block;margin:9px 0 4px;color:#55627a;font-size:10.5px;font-weight:700}
   .idea-panel textarea{min-height:78px;height:78px;font-family:inherit}
   .idea-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
@@ -774,6 +779,7 @@
             <div class="spec-entry-title"><b>需求输入</b><span>可以先说想法，也可以直接提交已有规格</span></div>
             <div class="chips" id="exampleChips"></div>
           </div>
+          <div class="entry-scope" id="entryScope"></div>
           <div class="entry-modes">
             <button class="entry-mode on" id="ideaModeBtn" type="button">先说产品想法</button>
             <button class="entry-mode" id="specModeBtn" type="button">我已有设计规格</button>
@@ -872,6 +878,9 @@ let ideaChoiceSchema = [];
 let ideaChoicesApplied = false;
 let ideaChoiceRevision = 0;
 let ideaApplyTimer = null;
+let ideaDraftPreviewData = null;
+let entrySaveTimer = null;
+let restoringEntry = false;
 
 const KIND_COLOR = {
   contract:"#7c5cff", backend:"#2f6fed", frontend:"#0f9d8f",
@@ -1042,6 +1051,7 @@ function setEntryMode(mode) {
   $("#specPanel").hidden = idea;
   $("#ideaModeBtn").classList.toggle("on", idea);
   $("#specModeBtn").classList.toggle("on", !idea);
+  scheduleEntrySave();
 }
 
 async function makeIdeaDraft() {
@@ -1050,7 +1060,7 @@ async function makeIdeaDraft() {
   if (!idea) { status.textContent = "先写一句你想做什么。"; $("#ideaText").focus(); return; }
   if (state.busy) return;
   $("#makeDraftBtn").disabled = true;
-  status.textContent = "正在快速生成选项…";
+  status.textContent = "正在按你的描述生成规格…（约 10 秒；失败会自动退回模板）";
   try {
     const data = await api("/api/draft-spec", {idea});
     ideaDraftBase = data.draft_markdown || "";
@@ -1058,16 +1068,24 @@ async function makeIdeaDraft() {
     ideaChoiceSchema = data.choice_questions || [];
     ideaChoicesApplied = false;
     ideaChoiceRevision++;
+    ideaDraftPreviewData = data.preview || null;
     renderIdeaChoices(ideaChoiceSchema);
     $("#ideaDraftPreview").innerHTML = renderIdeaPreview(data.preview);
     const warning = data.warning ? " · " + esc(data.warning) : "";
-    $("#ideaQuestions").innerHTML = "<b>" + esc(data.mode || "规则模板") + warning + "</b><div>请通过上方选项补充信息；未选择的内容不会被当成已确认需求。</div>";
+    const stat = data.stats ? "（" + data.stats.modules + " 个模块 / " + data.stats.requirements + " 条需求" + (data.elapsed ? "，" + data.elapsed + "s" : "") + "）" : "";
+    const hint = data.source === "llm"
+      ? "下面是模型按你的描述生成的规格：核对模块是否覆盖、有没有多余，可直接改规格文本后重新生成预览。"
+      : "请通过上方选项补充信息；未选择的内容不会被当成已确认需求。";
+    $("#ideaQuestions").innerHTML = "<b>" + esc(data.mode || "规则模板") + stat + warning + "</b><div>" + hint + "</div>";
     $("#ideaQuestions").hidden = false;
     $("#ideaDraftPanel").hidden = false;
     $("#ideaConfirmCheck").checked = false;
     $("#ideaConfirmCheck").disabled = true;
     $("#ideaRunBtn").disabled = true;
-    status.textContent = "选择主要用户、第一版功能、平台和范围；预览会随选择自动更新。";
+    status.textContent = ideaChoiceSchema.some(group => group.key === "features")
+      ? "选择主要用户、第一版功能、平台和范围；预览会随选择自动更新。"
+      : "规格已生成。可直接确认，也可选一下使用者/平台/范围补充约束。";
+    scheduleEntrySave();
   } catch (e) {
     status.textContent = e.message;
   } finally {
@@ -1117,11 +1135,13 @@ async function applyIdeaChoices() {
   const revision = ++ideaChoiceRevision;
   try {
     const data = await api("/api/confirm-spec-draft", {
-      idea: $("#ideaText").value.trim(), base_markdown: ideaDraftBase, selections: readIdeaChoices(),
+      idea: $("#ideaText").value.trim(), base_markdown: ideaDraftBase, selections: readIdeaChoices(), choice_questions: ideaChoiceSchema,
     });
     if (revision !== ideaChoiceRevision) return;
     ideaDraftCurrent = data.draft_markdown || "";
+    ideaDraftPreviewData = data.preview || null;
     $("#ideaDraftPreview").innerHTML = renderIdeaPreview(data.preview);
+    scheduleEntrySave();
     ideaChoicesApplied = true;
     $("#ideaConfirmCheck").checked = false;
     $("#ideaConfirmCheck").disabled = !data.can_confirm;
@@ -1138,6 +1158,7 @@ function confirmIdeaDraft() {
   if (!draft) { $("#ideaDraftStatus").textContent = "草稿为空，请先补充规格内容。"; return; }
   $("#specText").value = draft;
   setEntryMode("spec");
+  scheduleEntrySave();
   run(true);
 }
 
@@ -1677,12 +1698,14 @@ $("#makeDraftBtn").onclick = makeIdeaDraft;
 $("#ideaText").addEventListener("input", () => {
   ideaChoiceRevision++;
   clearTimeout(ideaApplyTimer);
-  ideaDraftBase = ""; ideaDraftCurrent = ""; ideaChoicesApplied = false;
+  ideaDraftBase = ""; ideaDraftCurrent = ""; ideaChoicesApplied = false; ideaDraftPreviewData = null;
   $("#ideaDraftPanel").hidden = true;
   $("#ideaConfirmCheck").checked = false;
   $("#ideaConfirmCheck").disabled = true;
   $("#ideaRunBtn").disabled = true;
+  scheduleEntrySave();
 });
+$("#specText").addEventListener("input", scheduleEntrySave);
 $("#ideaConfirmCheck").onchange = () => { $("#ideaRunBtn").disabled = !$("#ideaConfirmCheck").checked || state.busy; };
 $("#ideaChoices").onchange = () => {
   updateSelectAllLabels();
@@ -1723,11 +1746,91 @@ document.addEventListener("keydown", e => {
 boot();
 loadProjects();
 
+/* ---------------- 输入区归属：每个项目存自己的草稿 ---------------- */
+function renderEntryScope() {
+  const box = $("#entryScope");
+  if (!box) return;
+  if (state.project) {
+    box.className = "entry-scope";
+    box.innerHTML = "<b>当前项目：" + esc(state.project.name) + "</b><span class=\"scope-tip\">想法、规格与运行结果只保存在这个项目；切到别的项目会自动换成它自己的草稿。</span>";
+  } else {
+    box.className = "entry-scope warn";
+    box.innerHTML = "<b>未选择项目</b><span class=\"scope-tip\">可以先试跑，但输入和结果不会保存。点左侧项目或“新建项目”后，输入区才归属项目。</span>";
+  }
+}
+
+function collectEntry() {
+  return {
+    mode: $("#ideaPanel").hidden ? "spec" : "idea",
+    idea_text: $("#ideaText").value,
+    spec_text: $("#specText").value,
+    draft_markdown: ideaDraftBase || "",
+    draft_current: ideaDraftCurrent || "",
+    preview: ideaDraftPreviewData || null,
+    choice_questions: ideaChoiceSchema || [],
+    choices_applied: !!ideaChoicesApplied,
+    saved_at: new Date().toISOString(),
+  };
+}
+
+function scheduleEntrySave() {
+  if (restoringEntry) return;
+  if (!state.project) { renderEntryScope(); return; }
+  clearTimeout(entrySaveTimer);
+  entrySaveTimer = setTimeout(flushEntrySave, 700);
+}
+
+async function flushEntrySave() {
+  clearTimeout(entrySaveTimer);
+  entrySaveTimer = null;
+  if (!state.project) return;
+  try {
+    await api("/api/project/entry", {project_id: state.project.id, entry: collectEntry()});
+  } catch (e) {
+    /* 草稿保存失败不打断使用，下一次输入会重试 */
+  }
+}
+
+function restoreEntry(entry) {
+  const e = entry && typeof entry === "object" ? entry : null;
+  restoringEntry = true;
+  ideaDraftBase = ""; ideaDraftCurrent = ""; ideaChoiceSchema = [];
+  ideaChoicesApplied = false; ideaDraftPreviewData = null; ideaChoiceRevision++;
+  $("#ideaConfirmCheck").checked = false;
+  $("#ideaConfirmCheck").disabled = true;
+  $("#ideaRunBtn").disabled = true;
+  $("#ideaDraftPanel").hidden = true;
+  $("#ideaQuestions").hidden = true;
+  $("#ideaDraftPreview").innerHTML = "";
+  $("#ideaChoices").innerHTML = "";
+  setEntryMode(e && e.mode === "spec" ? "spec" : "idea");
+  $("#ideaText").value = e && typeof e.idea_text === "string" ? e.idea_text : "";
+  if (e && typeof e.spec_text === "string") $("#specText").value = e.spec_text;
+  if (e && e.draft_markdown) {
+    ideaDraftBase = e.draft_markdown;
+    ideaDraftCurrent = e.draft_current || e.draft_markdown;
+    ideaDraftPreviewData = e.preview || null;
+    ideaChoiceSchema = Array.isArray(e.choice_questions) ? e.choice_questions : [];
+    ideaChoicesApplied = !!e.preview;
+    renderIdeaChoices(ideaChoiceSchema);
+    $("#ideaDraftPreview").innerHTML = renderIdeaPreview(ideaDraftPreviewData);
+    $("#ideaDraftPanel").hidden = false;
+    $("#ideaQuestions").hidden = false;
+    $("#ideaQuestions").innerHTML = "<b>已恢复这个项目上次的规格草稿</b><div>可以继续用选项补信息，确认后直接进入任务分解。</div>";
+    $("#ideaConfirmCheck").disabled = false;
+    $("#ideaDraftStatus").textContent = "已恢复「" + (state.project ? state.project.name : "当前项目") + "」的草稿。";
+  } else {
+    $("#ideaDraftStatus").textContent = "先写一句想法；之后通过选项补充，规格摘要会自动更新。";
+  }
+  restoringEntry = false;
+}
+
 /* ---------------- 项目工作区 ---------------- */
 async function loadProjects() {
   try {
     const data = await api("/api/projects"); state.projects = data.projects || [];
     renderProjectList();
+    renderEntryScope();
     if (state.project) {
       const current = state.projects.find(p => p.id === state.project.id);
       if (current) await openProject(current.id);
@@ -1739,6 +1842,7 @@ function renderProjectList() {
   if (!state.projects.length) { box.innerHTML = '<div class="sidebar-empty">还没有项目。点击上方“新建项目”开始。</div>'; return; }
   box.innerHTML = state.projects.map(p => `<button class="project-item ${state.project && p.id === state.project.id ? "on" : ""}" data-id="${esc(p.id)}"><b>${esc(p.name)}</b><small>更新于 ${esc(formatLocalTime(p.updated_at))}</small></button>`).join("");
   box.querySelectorAll(".project-item").forEach(b => b.onclick = async () => { switchTab("workspace"); await openProject(b.dataset.id); });
+  renderEntryScope();
 }
 function formatLocalTime(value) {
   if (!value) return "刚刚";
@@ -1758,10 +1862,13 @@ async function createProject() {
 }
 async function openProject(id) {
   try {
+    // 切项目前先把当前项目的草稿落盘，避免“上一份输入被后一个项目盖掉”
+    if (state.project && state.project.id !== id && entrySaveTimer) await flushEntrySave();
     const data = await api("/api/project?id=" + encodeURIComponent(id));
     state.project = data; state.selectedContext = new Set();
-    renderProjectList(); renderProject();
+    renderProjectList(); renderProject(); renderEntryScope();
     restoreWorkflow(data.workflow);
+    restoreEntry(data.entry);
   } catch (e) { $("#chatStatus").textContent = e.message; }
 }
 
