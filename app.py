@@ -11,6 +11,7 @@
     POST /api/run              {spec_text, decompose, orchestrate} → 全链路结果
     POST /api/reorchestrate    {spec, tasks, orchestrate} → 重排计划 + 版本差异
     POST /api/simulate         {tasks, plan} → 演练推进的状态事件
+    GET  /api/ping             健康检查（前端 boot 探活用），已纳入接口约定
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ from urllib.parse import parse_qs, urlparse
 
 from config import (
     GRANULARITY_PRESETS,
+    SERVER_PORT,
     STRATEGIES,
     DecomposeConfig,
     OrchestrateConfig,
@@ -124,6 +126,8 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/", "/index.html"):
                 return self._serve_file(os.path.join(WEB, "index.html"), "text/html; charset=utf-8")
             if path == "/api/ping":
+                # 健康检查端点：前端页面加载时用它判断后端是否在线（探活），
+                # 返回 pid 便于开发期确认服务重启生效。已纳入①接口约定。
                 return self._json({"ok": True, "service": "se-workflow", "pid": os.getpid()})
             if path == "/api/config":
                 cfg = load_llm_config(ROOT)
@@ -361,7 +365,7 @@ def _orchestrate_cfg(d: dict) -> OrchestrateConfig:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="通用 SE workflow 原型：design spec → 任务分解 → 编排 → 可视化")
-    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", str(SERVER_PORT))))
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
 
