@@ -773,7 +773,7 @@
         <div id="specBody" style="display:none"></div>
         <div class="card verification-card">
           <h4>通用性验证<span class="sub">使用不同产品规格检验工作流复用能力</span></h4>
-          <div class="history" id="historyBox">还没有运行记录。选择两个不同案例运行后，可在这里对比任务与编排结果。</div>
+          <div class="history" id="historyBox">还没有运行记录。选择多个不同案例运行后，可在这里对比任务与编排结果。</div>
         </div>
       </div>
 
@@ -817,8 +817,9 @@ const $ = (s) => document.querySelector(s);
 const state = {
   spec: null, tasks: [], plan: null, coverage: null, meta: null,
   events: [], planDiff: null, history: [],
-  selected: null, impactReqId: null, simIndex: -1, busy: false,
+  selected: null, impactReqId: null, simIndex: -1, busy: false, simBusy: false,
   projects: [], project: null, selectedContext: new Set(), chatBusy: false,
+  llmAvailable: false, strategies: [],
 };
 
 const KIND_COLOR = {
@@ -835,7 +836,7 @@ const API_BASE = (() => {
   const p = location.protocol;
   const h = location.hostname;
   if ((p === "http:" || p === "https:") && (h === "127.0.0.1" || h === "localhost" || h === "[::1]")) return "";
-  return "http://127.0.0.1:8765";
+  return "http://127.0.0.1:8000";
 })();
 
 async function api(path, body) {
@@ -861,12 +862,14 @@ async function boot(attempt = 0) {
     const cfg = await api("/api/config");
     logEvent("info", "初始化", "config", "已连接后端 " + (API_BASE || location.origin));
     const badge = $("#llmBadge");
+    state.llmAvailable = !!cfg.llm.available;
     if (cfg.llm.available) { badge.textContent = "LLM 已接入 · " + cfg.llm.model; badge.classList.add("on"); }
     else { badge.textContent = "规则分解模式（无 API Key 亦可演示）"; }
     const sel = $("#strategy");
+    state.strategies = cfg.strategies;
     sel.innerHTML = cfg.strategies.map(s => `<option value="${s.key}">${s.label}</option>`).join("");
-    updateStrategyHint(cfg.strategies);
-    sel.onchange = () => updateStrategyHint(cfg.strategies);
+    updateStrategyHint();
+    sel.onchange = () => updateStrategyHint();
 
     const ex = await api("/api/examples");
     const box = $("#exampleChips");
@@ -880,7 +883,7 @@ async function boot(attempt = 0) {
       await loadExample(want);
       if (qp.get("strategy")) $("#strategy").value = qp.get("strategy");
       if (qp.get("granularity")) $("#granularity").value = qp.get("granularity");
-      updateStrategyHint(cfg.strategies);
+      updateStrategyHint();
       if (qp.get("auto") !== "0") {
         await run();
         if (qp.get("tab")) switchTab(qp.get("tab"));
@@ -899,9 +902,9 @@ async function boot(attempt = 0) {
   }
 }
 
-function updateStrategyHint(list) {
+function updateStrategyHint() {
   const v = $("#strategy").value;
-  const s = list.find(x => x.key === v);
+  const s = (state.strategies || []).find(x => x.key === v);
   $("#strategyHint").textContent = s ? s.desc : "";
 }
 
@@ -953,7 +956,7 @@ function applyResult(data, keepTab) {
   state.spec = data.spec; state.tasks = data.tasks; state.plan = data.plan;
   if (!keepTab) state.impactReqId = null;
   state.coverage = data.coverage; state.meta = data.meta || state.meta;
-  if (data.meta && data.meta.llm) updateLlmBadge(data.meta.llm);
+  if (data.meta && data.meta.llm) { updateLlmBadge(data.meta.llm); state.llmAvailable = !!data.meta.llm.available; }
   state.planDiff = data.plan_diff || null;
   state.selected = null;
   state.simIndex = -1;
@@ -1142,7 +1145,7 @@ function renderTasks() {
         <thead><tr>
           <th style="width:64px">编号</th><th>任务</th>
           <th style="width:100px">角色</th><th style="width:70px">优先级</th><th style="width:64px">人日</th>
-          <th style="width:150px">依赖</th><th style="width:72px">状态</th><th style="width:104px">出处</th><th style="width:36px"></th>
+          <th style="width:150px">依赖</th><th style="width:72px">状态</th><th style="width:104px">出处</th>
         </tr></thead>
         <tbody>${state.tasks.map(t => taskRow(t)).join("")}</tbody>
       </table>
@@ -1150,15 +1153,8 @@ function renderTasks() {
     <div class="hint">人日、角色、优先级、依赖都可直接改；改动会标记为「人工」并进入下一次重新编排。</div>`;
 
   $("#taskBody").querySelectorAll("[data-edit]").forEach(inp => {
-    inp.onchange = () => editTask(inp.dataset.id, inp.dataset.edit, inp.value);
+    inp.onchange = () => editTask(inp.dataset.id, inp.dataset.edit, inp.value, inp);
   });
-    $("#taskBody").querySelectorAll("[data-del]").forEach(btn => {
-      btn.onclick = () => {
-        state.tasks = state.tasks.filter(t => t.task_id !== btn.dataset.del);
-        state.tasks.forEach(t => t.depends_on = (t.depends_on || []).filter(d => d !== btn.dataset.del));
-        renderTasks(); updateCounts(); saveWorkflow();
-      };
-    });
 }
 
 function taskRow(t) {
@@ -1178,16 +1174,26 @@ function taskRow(t) {
     <td><input type="text" style="width:138px" data-edit="depends_on" data-id="${t.task_id}" value="${esc((t.depends_on || []).join(","))}" placeholder="T-01,T-02"></td>
     <td><span class="tag ${t.status}">${STATUS_ZH[t.status] || t.status}</span></td>
     <td class="src" style="max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(refs)}">${esc(refs)}</td>
-    <td><button class="ghost" data-del="${t.task_id}" title="删除任务">×</button></td>
   </tr>`;
 }
 
-function editTask(id, field, value) {
+function editTask(id, field, value, el) {
   const t = state.tasks.find(x => x.task_id === id);
   if (!t) return;
-  if (field === "estimate_days") t.estimate_days = Math.max(0.5, Math.min(2, parseFloat(value) || 1));
-  else if (field === "depends_on") t.depends_on = String(value).split(",").map(s => s.trim()).filter(Boolean).filter(d => d !== id);
-  else t[field] = value;
+  if (field === "estimate_days") {
+    const days = Math.max(0.5, Math.min(2, parseFloat(value) || 1));
+    t.estimate_days = days;
+    if (el) el.value = days;
+  } else if (field === "depends_on") {
+    const validIds = new Set(state.tasks.map(x => x.task_id));
+    const parsed = String(value).split(",").map(s => s.trim()).filter(Boolean).filter(d => d !== id);
+    const bad = parsed.filter(d => !validIds.has(d));
+    t.depends_on = parsed.filter(d => validIds.has(d));
+    if (bad.length) logEvent("warn", "review", id, `忽略不存在的依赖：${bad.join(", ")}`);
+    if (el) el.value = t.depends_on.join(",");
+  } else {
+    t[field] = value;
+  }
   t.origin = "human";
   logEvent("info", "review", "编辑", `${id} ${field} → ${value}`);
 }
@@ -1422,20 +1428,26 @@ function renderPlanDiff(diff) {
 
 /* ---------------- 演练推进 ---------------- */
 async function simulateRun() {
-  if (!state.plan) return;
-  const data = await api("/api/simulate", {tasks: state.tasks, plan: state.plan});
-  const evs = data.events || [];
-  let done = {};
-  evs.forEach((e, i) => {
-    setTimeout(() => {
-      if (e.event_type === "start") e.event_type = "info";
-      logEvent(e.event_type === "done" ? "done" : "info", "run", e.task_id || "task", e.message);
-      if (e.event_type === "done") {
-        done[e.task_id] = true;
-        markChipDone(e.task_id);
-      }
-    }, i * 45);
-  });
+  if (!state.plan || state.simBusy) return;
+  state.simBusy = true;
+  const sim = $("#simBtn"); if (sim) sim.disabled = true;
+  const release = () => { state.simBusy = false; if (sim) sim.disabled = false; };
+  try {
+    const data = await api("/api/simulate", {tasks: state.tasks, plan: state.plan});
+    const evs = data.events || [];
+    if (!evs.length) { release(); return; }
+    evs.forEach((e, i) => {
+      setTimeout(() => {
+        if (e.event_type === "start") e.event_type = "info";
+        logEvent(e.event_type === "done" ? "done" : "info", "run", e.task_id || "task", e.message);
+        if (e.event_type === "done") markChipDone(e.task_id);
+      }, i * 45);
+    });
+    setTimeout(release, evs.length * 45 + 200);
+  } catch (e) {
+    logEvent("error", "simulate", "演练", e.message);
+    release();
+  }
 }
 
 function markChipDone(id) {
@@ -1499,18 +1511,27 @@ $("#uploadFileBtn").onclick = () => $("#filePicker").click();
 $("#filePicker").onchange = uploadFiles;
 $("#sendChatBtn").onclick = sendProjectMessage;
 $("#chatInput").addEventListener("input", updateChatButton);
-$("#chatInput").addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") sendProjectMessage(); });
+$("#chatInput").addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.stopPropagation(); sendProjectMessage(); } });
 $("#closePreviewBtn").onclick = () => $("#filePreview").classList.remove("on");
 $("#filePreview").onclick = e => { if (e.target.id === "filePreview") $("#filePreview").classList.remove("on"); };
 $("#runBtn").onclick = run;
 $("#rePlanBtn").onclick = rePlan;
-$("#clearBtn").onclick = () => { $("#specText").value = ""; };
+$("#clearBtn").onclick = () => {
+  $("#specText").value = "";
+  document.querySelectorAll("#exampleChips .chip").forEach(c => c.classList.remove("on"));
+};
+$("#specText").addEventListener("input", () => {
+  document.querySelectorAll("#exampleChips .chip").forEach(c => c.classList.remove("on"));
+});
 $("#loghead").onclick = () => $("#logbar").classList.toggle("collapsed");
 $("#st1").onclick = () => switchTab("spec");
 $("#st2").onclick = () => switchTab("tasks");
 $("#st3").onclick = () => switchTab("plan");
 document.addEventListener("keydown", e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") run();
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    if (e.target && (e.target.id === "chatInput" || e.target.closest("#workspaceChat"))) return;
+    run();
+  }
 });
 boot();
 loadProjects();
@@ -1549,6 +1570,9 @@ async function createProject() {
   finally { btn.disabled = false; }
 }
 async function openProject(id) {
+  if (state.project && state.project.id !== id && state.spec) {
+    if (!confirm("当前工作区还有未保存到该项目的规格 / 任务 / 编排结果，切换项目将替换当前内容，是否继续？")) return;
+  }
   try {
     const data = await api("/api/project?id=" + encodeURIComponent(id));
     state.project = data; state.selectedContext = new Set();
@@ -1584,6 +1608,7 @@ function restoreWorkflow(wf) {
       if (wf.config.max_parallel) $("#maxParallel").value = wf.config.max_parallel;
       if (wf.config.per_role_wip_limit != null && wf.config.per_role_wip_limit !== "") $("#wipLimit").value = wf.config.per_role_wip_limit;
     }
+    updateStrategyHint();
     applyResult({...wf.result, events: []}, true);
     $("#rePlanBtn").disabled = !state.tasks.length;
     logEvent("info", "project", "恢复", `已载入「${state.project.name}」上次的工作区（${(wf.result.tasks || []).length} 条任务）`);
@@ -1650,11 +1675,16 @@ async function uploadFiles() {
   picker.value = "";
 }
 function updateChatButton() {
-  $("#sendChatBtn").disabled = !state.project || state.chatBusy || !$("#chatInput").value.trim();
-  $("#chatStatus").textContent = state.project ? (state.chatBusy ? "正在生成回复…" : "仅发送消息和已勾选文件内容") : "选择项目后开始对话";
+  const hasText = !!$("#chatInput").value.trim();
+  const canChat = state.project && state.llmAvailable && !state.chatBusy && hasText;
+  $("#sendChatBtn").disabled = !canChat;
+  if (!state.project) $("#chatStatus").textContent = "选择项目后开始对话";
+  else if (!state.llmAvailable) $("#chatStatus").textContent = "未配置 DeepSeek API Key，聊天不可用；项目文件管理仍可使用";
+  else if (state.chatBusy) $("#chatStatus").textContent = "正在生成回复…";
+  else $("#chatStatus").textContent = "仅发送消息和已勾选文件内容";
 }
 async function sendProjectMessage() {
-  if (!state.project || state.chatBusy) return;
+  if (!state.project || state.chatBusy || !state.llmAvailable) return;
   const input = $("#chatInput"), message = input.value.trim(); if (!message) return;
   state.chatBusy = true; updateChatButton();
   const oldMessages = state.project.messages || [];

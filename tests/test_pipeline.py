@@ -1,18 +1,15 @@
 """自测：不依赖 pytest，直接跑 `python -m unittest discover -s tests -v`。
 
-覆盖 6 条可验收的行为：
-1. 两份不同产品的规格都能解析出结构；
-2. 换规格不改代码 → 任务集不同、需求覆盖率 100%；
-3. 任务依赖闭合且无环；
-4. 人为构造循环依赖 → 计划不合法，相关任务被阻塞；
-5. 去掉某任务的验收标准 → 它被降级为待确认，且不进入批次；
-6. 换编排策略 → 批次结构确实改变。
+覆盖规格解析、任务分解、依赖闭合、环 / 缺依赖阻塞、待确认降级、覆盖检查、
+编排策略、关键路径与时差、冗余依赖等可验收行为；仓库三份样例规格（A/B/C）
+在规则离线模式下跑通，需求覆盖率均为 100%。
 
-另有依赖分析模块（graph.py / orchestrator.py）的专项自测：
-7. 多条互不相交的环 → 所有环上任务全部阻塞，重编排不崩溃；
-8. 依赖不存在的任务 → 该任务直接阻塞并写明缺失对象；
-9. 冗余传递依赖 → 被检出并提示，但不影响排期；
-10. 任务时差 → 关键路径任务时差为 0，链外任务时差 = 可浮动天数。
+主要分组：
+- TestParse：Markdown 解析结构、非功能要求不被当成模块、残缺规格生成待确认问题；
+- TestPipeline：换规格不改代码、依赖闭合无环、契约校验、待确认不计入可执行覆盖、
+  缺交付物 / 验收标准被降级、循环依赖阻塞、换策略批次改变、关键路径、多条互不相交的环、
+  依赖缺失阻塞、冗余传递依赖提示；
+- TestGraphAnalysis：graph.py 纯算法专项（全环检出、时差、冗余边、环时降级为空）。
 """
 from __future__ import annotations
 
@@ -72,7 +69,7 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(rb["coverage"]["coverage_ratio"], 1.0)
         ta = {t["title"] for t in ra["tasks"]}
         tb = {t["title"] for t in rb["tasks"]}
-        self.assertGreater(len(ta ^ tb), 10, "两份产品应生成差异明显的任务集")
+        self.assertGreater(len(ta ^ tb), 10, "不同产品应生成差异明显的任务集")
         self.assertNotEqual(ra["spec"]["product"], rb["spec"]["product"])
 
     def test_dependencies_closed_and_acyclic(self):
