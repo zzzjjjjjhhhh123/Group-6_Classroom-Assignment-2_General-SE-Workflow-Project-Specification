@@ -1230,6 +1230,7 @@ function renderPlan() {
         <div class="stat"><b>${st.max_parallel_width || 0}</b><span>最大并行宽度</span></div>
         <div class="stat"><b>${st.total_effort_days || 0}</b><span>总工作量（人日）</span></div>
         <div class="stat"><b>${st.critical_path_days || 0}</b><span>关键路径（人日）</span></div>
+        <div class="stat"><b>${st.max_slack_days || 0}</b><span>最大任务时差（人日）</span></div>
         <div class="stat"><b>${st.blocked_count || 0}</b><span>未进入批次</span></div>
       </div>
     </div>
@@ -1271,12 +1272,12 @@ function renderPlan() {
             const t = byId[id] || {};
             return `${i ? '<span style="color:var(--muted)">→</span>' : ""}<span class="tchip crit" data-task="${id}"><b class="src">${esc(id)}</b> ${esc(t.title || "")}</span>`;
           }).join("")}</div>
-          <div class="hint" style="margin-top:8px">累计 ${st.critical_path_days || 0} 人日；按批次排布的理论工期约 ${st.scheduled_wall_days || 0} 人日，并行节省 ${st.parallel_saving_days || 0} 人日。</div>`
+          <div class="hint" style="margin-top:8px">累计 ${st.critical_path_days || 0} 人日；按批次排布的理论工期约 ${st.scheduled_wall_days || 0} 人日，并行节省 ${st.parallel_saving_days || 0} 人日；链外任务最大可浮动 ${st.max_slack_days || 0} 人日不影响总工期。</div>`
         : `<div class="hint">无关键路径（任务为空或全部被阻塞）。</div>`}
     </div>
 
     <div class="card">
-      <h4>未进入批次的任务<span class="sub">待确认 / 循环依赖 / 被前置阻塞</span></h4>
+      <h4>未进入批次的任务<span class="sub">待确认 / 循环依赖 / 依赖缺失 / 被前置阻塞</span></h4>
       ${(p.blocked || []).length
         ? `<table><thead><tr><th style="width:70px">任务</th><th style="width:180px">任务名</th><th>阻塞原因</th></tr></thead><tbody>
             ${p.blocked.map(b => `<tr><td class="src">${esc(b.task_id)}</td><td>${esc((byId[b.task_id] || {}).title || "—")}</td>

@@ -7,8 +7,9 @@
 - role_batch：同层内按角色归拢，适合按人分派；
 - critical_path：关键路径上的任务优先前置，风险早暴露。
 
-编排只排"可执行"的任务：待确认（无出处/缺验收标准）和被循环依赖卡住的任务
-一律阻塞，并写清原因，不混进批次里充数。
+编排只排"可执行"的任务：待确认（无出处/缺验收标准）、依赖缺失（指向不存在的任务
+或自身）、处于任何一条循环依赖上的任务一律阻塞，阻塞沿依赖链向下传导，每条都写清
+原因，不混进批次里充数。编排依据里还会给出关键路径、每任务时差与冗余依赖提示。
 """
 from __future__ import annotations
 
@@ -39,18 +40,34 @@ def orchestrate(
     errors = validate_tasks(tasks, spec)
     rationale: List[str] = []
 
-    cycle = graph.find_cycle()
-    if cycle:
-        errors.append("检测到循环依赖：" + " → ".join(cycle) + "，已阻止这些任务进入计划，请修改依赖后重新编排")
+    cycle_groups = graph.cycle_groups()
+    if cycle_groups:
+        # 找出所有环（可能有多条互不相交的环），全部阻止进入计划
+        detail = "；".join("、".join(g) + " 互相等待" for g in cycle_groups)
+        first = graph.find_cycle()
+        errors.append(
+            "检测到循环依赖：" + detail
+            + ("（其中一条环路：" + " → ".join(first) + "）" if first else "")
+            + "，已阻止这些任务进入计划，请修改依赖后重新编排"
+        )
 
     # ---- 1. 判定哪些任务可进入计划 ----
-    cycle_set: Set[str] = set(graph.cycle_members())
+    cycle_set: Set[str] = {n for g in cycle_groups for n in g}
+    known_ids = set(graph.tasks.keys())
     blocked: List[BlockedTask] = []
     blocked_ids: Set[str] = set()
 
     for t in sorted(tasks, key=lambda x: x.task_id):
+        missing = sorted(d for d in t.depends_on if d not in known_ids)
         if t.task_id in cycle_set:
-            blocked.append(BlockedTask(t.task_id, "位于循环依赖中，需先打破环路"))
+            group = next(g for g in cycle_groups if t.task_id in g)
+            blocked.append(BlockedTask(t.task_id, "位于循环依赖中（" + "、".join(group) + "），需先打破环路"))
+            blocked_ids.add(t.task_id)
+        elif t.task_id in t.depends_on:
+            blocked.append(BlockedTask(t.task_id, "依赖了自身，请移除该依赖"))
+            blocked_ids.add(t.task_id)
+        elif missing:
+            blocked.append(BlockedTask(t.task_id, "依赖了不存在的任务：" + "、".join(missing)))
             blocked_ids.add(t.task_id)
         elif t.status == "pending":
             reason = t.pending_reason or "信息不全，待人工补齐"
@@ -91,12 +108,24 @@ def orchestrate(
         plan.stats = _stats([], graph, blocked, tasks)
         return plan
 
-    # ---- 2. 在可执行子图上重算层级与关键路径 ----
+    # ---- 2. 在可执行子图上重算层级、关键路径与时差 ----
     sub = _induced(runnable)
     sub_graph = TaskGraph(sub)
-    levels = sub_graph.levels() if not sub_graph.find_cycle() else {}
-    crit_path, crit_days = sub_graph.critical_path() if levels else ([], 0.0)
+    leftover = sub_graph.find_cycle()
+    if leftover:
+        # 理论上不会发生（所有环成员已在上面被阻塞），兜底保证重编排不崩溃
+        errors.append("可执行子图仍存在环路：" + " → ".join(leftover) + "，请先修正依赖")
+        plan.valid = False
+        plan.errors = errors
+        rationale.append("子图存在未处理的环路，无法生成批次。")
+        plan.rationale = rationale
+        plan.stats = _stats([], sub_graph, blocked, tasks)
+        return plan
+    levels = sub_graph.levels()
+    crit_path, crit_days = sub_graph.critical_path()
     crit_set = set(crit_path)
+    slack = sub_graph.slack()
+    redundant = sub_graph.redundant_edges()
 
     # ---- 3. 按策略生成批次 ----
     if cfg.strategy == "dependency_first":
@@ -118,15 +147,32 @@ def orchestrate(
     rationale.append(f"策略「{strat.get('label', cfg.strategy)}」：{strat.get('desc', '')}；并行上限 {cfg.max_parallel}，单角色并行上限 {cfg.per_role_wip_limit or '不限'}")
     if crit_path:
         rationale.append(f"关键路径 {' → '.join(crit_path)}，累计 {crit_days} 人日，是当前工期的理论下界")
+    if slack:
+        loose = {tid: s for tid, s in slack.items() if s > 0}
+        if loose:
+            top = max(loose.items(), key=lambda x: x[1])
+            rationale.append(
+                f"时差分析：{len(loose)} 条任务有排期缓冲，最大 {top[1]} 人日（{top[0]}）；"
+                f"时差为 0 的 {len(slack) - len(loose)} 条任务一旦延误会直接推迟总工期"
+            )
+    if redundant:
+        hints = [f"{a} 对 {b} 的依赖已由 {a}→{via}→{b} 传递覆盖" for a, b, via in redundant[:5]]
+        rationale.append(
+            f"发现 {len(redundant)} 条冗余依赖（可精简，不影响排期）：" + "；".join(hints)
+            + (" 等" if len(redundant) > 5 else "")
+        )
     if blocked:
         pending = sum(1 for b in blocked if b.reason.startswith("待确认"))
         propagate = sum(1 for b in blocked if b.reason.startswith("前置"))
         cyclic = sum(1 for b in blocked if b.reason.startswith("位于循环"))
+        missing_dep = sum(1 for b in blocked if b.reason.startswith(("依赖了不存在", "依赖了自身")))
         parts = []
         if pending:
             parts.append(f"{pending} 条待确认")
         if cyclic:
             parts.append(f"{cyclic} 条循环依赖")
+        if missing_dep:
+            parts.append(f"{missing_dep} 条依赖缺失")
         if propagate:
             parts.append(f"{propagate} 条被前置阻塞")
         rationale.append("未进入批次：" + "、".join(parts))
@@ -134,7 +180,7 @@ def orchestrate(
         rationale.append("孤立任务（无依赖关系）：" + "、".join(sub_graph.isolated()) + "，建议确认是否漏拆依赖")
 
     plan.rationale = rationale
-    plan.stats = _stats(batches, sub_graph, blocked, tasks, crit_days)
+    plan.stats = _stats(batches, sub_graph, blocked, tasks, crit_days, slack, redundant)
     return plan
 
 
@@ -302,7 +348,11 @@ def _stats(
     blocked: List[BlockedTask],
     all_tasks: List[Task],
     crit_days: float = 0.0,
+    slack: Optional[Dict[str, float]] = None,
+    redundant: Optional[List[Tuple[str, str, str]]] = None,
 ) -> Dict[str, object]:
+    slack = slack or {}
+    redundant = redundant or []
     total_days = round(sum(t.estimate_days for t in all_tasks), 1)
     width = max((len(b.task_ids) for b in batches), default=0)
     by_role: Dict[str, int] = {}
@@ -322,6 +372,9 @@ def _stats(
         "scheduled_wall_days": round(serial_days, 1),
         "parallel_saving_days": round(total_days - serial_days, 1) if batches else 0.0,
         "blocked_count": len(blocked),
+        "slack_days": dict(slack),
+        "max_slack_days": max(slack.values(), default=0.0),
+        "redundant_edges": [list(e) for e in redundant],
         "by_role": by_role,
         "by_kind": by_kind,
     }

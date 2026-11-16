@@ -7,6 +7,12 @@
 4. 人为构造循环依赖 → 计划不合法，相关任务被阻塞；
 5. 去掉某任务的验收标准 → 它被降级为待确认，且不进入批次；
 6. 换编排策略 → 批次结构确实改变。
+
+另有依赖分析模块（graph.py / orchestrator.py）的专项自测：
+7. 多条互不相交的环 → 所有环上任务全部阻塞，重编排不崩溃；
+8. 依赖不存在的任务 → 该任务直接阻塞并写明缺失对象；
+9. 冗余传递依赖 → 被检出并提示，但不影响排期；
+10. 任务时差 → 关键路径任务时差为 0，链外任务时差 = 可浮动天数。
 """
 from __future__ import annotations
 
@@ -20,7 +26,7 @@ sys.path.insert(0, ROOT)
 os.environ["SE_WORKFLOW_OFFLINE"] = "1"
 
 from config import DecomposeConfig, OrchestrateConfig  # noqa: E402
-from contracts import check_coverage, validate_tasks  # noqa: E402
+from contracts import Task, check_coverage, validate_tasks  # noqa: E402
 from graph import TaskGraph  # noqa: E402
 from pipeline import Pipeline  # noqa: E402
 from spec_parser import parse_spec  # noqa: E402
@@ -145,6 +151,119 @@ class TestPipeline(unittest.TestCase):
         r = self.p.run(read("spec_case_b.md"))
         self.assertGreaterEqual(len(r["plan"]["critical_path"]), 2)
         self.assertGreater(r["plan"]["stats"]["critical_path_days"], 0)
+
+    def test_two_disjoint_cycles_all_blocked(self):
+        """两条互不相交的环：所有环上任务都被阻塞，且重编排不崩溃。"""
+        r = self.p.run(read("spec_case_a.md"))
+        tasks = r["tasks"]
+        edges = []
+        used = set()
+        for t in tasks:
+            for d in t["depends_on"]:
+                if t["task_id"] not in used and d not in used:
+                    edges.append((t["task_id"], d))
+                    used.update((t["task_id"], d))
+                    break
+            if len(edges) == 2:
+                break
+        self.assertEqual(len(edges), 2, "样例任务集中应能找到两条不相交的依赖边")
+        by_id = {t["task_id"]: t for t in tasks}
+        for child, parent in edges:
+            by_id[parent]["depends_on"] = list(by_id[parent].get("depends_on") or []) + [child]
+        out = self.p.reorchestrate({"spec": r["spec"], "tasks": tasks}, OrchestrateConfig())
+        self.assertFalse(out["plan"]["valid"], "有环时必须判为不合法计划")
+        blocked_ids = {b["task_id"] for b in out["plan"]["blocked"]}
+        for child, parent in edges:
+            self.assertIn(child, blocked_ids)
+            self.assertIn(parent, blocked_ids)
+        batch_ids = {tid for b in out["plan"]["batches"] for tid in b["task_ids"]}
+        self.assertFalse(batch_ids & blocked_ids, "被阻塞任务不应出现在任何批次中")
+
+    def test_missing_dependency_is_blocked(self):
+        r = self.p.run(read("spec_case_a.md"))
+        target = next(t for t in r["tasks"] if t["status"] == "ready")
+        target["depends_on"] = list(target.get("depends_on") or []) + ["T-NOPE-999"]
+        out = self.p.reorchestrate({"spec": r["spec"], "tasks": r["tasks"]}, OrchestrateConfig())
+        hit = [b for b in out["plan"]["blocked"] if b["task_id"] == target["task_id"]]
+        self.assertTrue(hit, "依赖不存在的任务必须被阻塞")
+        self.assertIn("T-NOPE-999", hit[0]["reason"])
+        batch_ids = {tid for b in out["plan"]["batches"] for tid in b["task_ids"]}
+        self.assertNotIn(target["task_id"], batch_ids)
+
+    def test_redundant_dependency_detected(self):
+        r = self.p.run(read("spec_case_a.md"))
+        tasks = r["tasks"]
+        by_id = {t["task_id"]: t for t in tasks}
+        # 找一条二级链 t → p → g，再给 t 直接补上对 g 的冗余依赖
+        chain = None
+        for t in tasks:
+            for p in t["depends_on"]:
+                gs = by_id[p].get("depends_on") or []
+                if gs:
+                    chain = (t, p, gs[0])
+                    break
+            if chain:
+                break
+        self.assertIsNotNone(chain, "样例任务集中应存在二级依赖链")
+        t, p, g = chain
+        t["depends_on"] = list(t["depends_on"]) + [g]
+        out = self.p.reorchestrate({"spec": r["spec"], "tasks": tasks}, OrchestrateConfig())
+        redundant = out["plan"]["stats"].get("redundant_edges", [])
+        self.assertTrue(
+            any(e[0] == t["task_id"] and e[1] == g and e[2] == p for e in redundant),
+            f"应检出 {t['task_id']} 对 {g} 的冗余依赖，实际：{redundant}",
+        )
+        self.assertTrue(any("冗余" in line for line in out["plan"]["rationale"]))
+        batch_ids = {tid for b in out["plan"]["batches"] for tid in b["task_ids"]}
+        self.assertIn(t["task_id"], batch_ids, "冗余依赖只是提示，不应阻塞任务")
+
+
+class TestGraphAnalysis(unittest.TestCase):
+    """graph.py 的纯算法自测，不经过 pipeline。"""
+
+    @staticmethod
+    def _t(task_id, deps=(), days=1.0):
+        return Task(task_id=task_id, title=task_id, depends_on=list(deps), estimate_days=days)
+
+    def test_finds_all_cycles_not_just_one(self):
+        g = TaskGraph([
+            self._t("A", ["B"]), self._t("B", ["A"]),      # 环 1
+            self._t("C", ["D"]), self._t("D", ["C"]),      # 环 2（与环 1 不相交）
+            self._t("E", ["A"]),                            # 环外
+        ])
+        groups = g.cycle_groups()
+        self.assertEqual(sorted(tuple(x) for x in groups), [("A", "B"), ("C", "D")])
+        self.assertEqual(g.cycle_members(), ["A", "B", "C", "D"])
+
+    def test_slack_on_and_off_critical_path(self):
+        g = TaskGraph([
+            self._t("A", days=2.0),
+            self._t("B", ["A"], 3.0),   # A→B 是关键路径，共 5 人日
+            self._t("C", days=1.0),     # 孤立任务，时差 = 5 - 1 = 4
+        ])
+        slack = g.slack()
+        self.assertEqual(slack["A"], 0.0)
+        self.assertEqual(slack["B"], 0.0)
+        self.assertEqual(slack["C"], 4.0)
+        path, days = g.critical_path()
+        self.assertEqual(path, ["A", "B"])
+        self.assertEqual(days, 5.0)
+
+    def test_redundant_edges(self):
+        g = TaskGraph([
+            self._t("A", ["B", "C"]),
+            self._t("B", ["C"]),
+            self._t("C"),
+        ])
+        self.assertEqual(g.redundant_edges(), [("A", "C", "B")])
+        # 删掉冗余边后层级不变
+        g2 = TaskGraph([self._t("A", ["B"]), self._t("B", ["C"]), self._t("C")])
+        self.assertEqual(g.levels(), g2.levels())
+
+    def test_slack_and_redundant_empty_when_cyclic(self):
+        g = TaskGraph([self._t("A", ["B"]), self._t("B", ["A"])])
+        self.assertEqual(g.slack(), {})
+        self.assertEqual(g.redundant_edges(), [])
 
 
 def _rebuild(payload_tasks):
