@@ -380,6 +380,25 @@
   .prop-card{position:relative;padding:10px 12px;border:1.5px solid #e2e7f0;border-radius:9px;background:#fff;cursor:pointer;transition:border-color .15s}
   .prop-card:hover{border-color:#9db1ef}
   .prop-card.on{border-color:#4c63d0;background:#f4f6ff}
+  .prop-card.held{opacity:.72;border-style:dashed}
+  .prop-card.dropped{opacity:.55;border-style:dashed;background:#f7f8fa}
+  .prop-actions{display:flex;align-items:center;gap:6px;margin-top:7px;min-height:18px}
+  .prop-state{flex:1;color:#8d93a0;font-size:10px}
+  .prop-act{padding:1px 8px;border:1px solid #dfe4ee;border-radius:7px;background:#fff;color:#5b6b7d;font:inherit;font-size:10px;cursor:pointer}
+  .prop-act:hover{border-color:#9db1ef;color:#4c63d0}
+  .prop-act.drop:hover{border-color:#e9a9a2;color:#b03a2e}
+  .prop-reason{width:100%;margin-top:6px;padding:4px 7px;border:1px solid #e2e7f0;border-radius:7px;font:inherit;font-size:10px;color:#34415b;background:#fff}
+  .sev{padding:0 5px;border-radius:7px;font-size:9.5px;font-weight:700}
+  .sev-高{background:#fdeaea;color:#b03a2e}
+  .sev-中{background:#fff4e0;color:#a3541d}
+  .sev-低{background:#eef1f5;color:#5b6b7d}
+  .need-human{padding:0 5px;border-radius:7px;background:#f0ebff;color:#6b46c1;font-size:9.5px;font-weight:700}
+  .dec-row{display:flex;gap:8px;align-items:flex-start;padding:4px 0;color:#34415b;font-size:11px;line-height:1.6}
+  .dec-act{flex:none;padding:0 7px;border-radius:7px;font-size:10px;font-weight:700;background:#eef1ff;color:#4c63d0}
+  .dec-act.dec-不采纳{background:#fdeaea;color:#b03a2e}
+  .dec-act.dec-暂缓{background:#fff4e0;color:#a3541d}
+  .disc-export{display:flex;justify-content:flex-end;margin-top:8px}
+  .disc-export button{padding:3px 10px;border:1px solid #dfe4ee;border-radius:8px;background:#fff;color:#4c63d0;font:inherit;font-size:10px;cursor:pointer}
   .prop-card .prop-name{color:#222c44;font-size:11px;font-weight:700;margin-bottom:4px}
   .prop-card .prop-goal{color:#34415b;font-size:10.5px;line-height:1.6;margin-bottom:5px}
   .prop-card ul{margin:3px 0;padding-left:16px;color:#5b6b7d;font-size:10.5px;line-height:1.6}
@@ -907,6 +926,7 @@ let ideaApplyTimer = null;
 let ideaDraftPreviewData = null;
 let ideaDiscussionData = null;
 let ideaSelectedProposal = "";
+let ideaDrafting = false;
 let entrySaveTimer = null;
 let restoringEntry = false;
 
@@ -1087,7 +1107,8 @@ async function makeIdeaDraft(proposal) {
   proposal = typeof proposal === "string" ? proposal.slice(0, 120) : "";
   const status = $("#ideaDraftStatus");
   if (!idea) { status.textContent = "先写一句你想做什么。"; $("#ideaText").focus(); return; }
-  if (state.busy) return;
+  if (state.busy || ideaDrafting) return;
+  ideaDrafting = true;
   $("#makeDraftBtn").disabled = true;
   status.textContent = proposal
     ? "已选定方案，正在按该方案重新生成规格…（约 10 秒）"
@@ -1100,8 +1121,14 @@ async function makeIdeaDraft(proposal) {
     ideaChoicesApplied = false;
     ideaChoiceRevision++;
     ideaDraftPreviewData = data.preview || null;
-    ideaDiscussionData = {discussion: data.discussion, proposals: data.proposals, evaluations: data.evaluations, open_questions: data.open_questions} || null;
+    // 切换方案时保留决策记录，但只保留本次生成里仍存在的方案（方案名可能变）
+    const newNames = new Set((data.proposals || []).map(p => p.name));
+    const keptDecisions = ideaDiscussionData && Array.isArray(ideaDiscussionData.decisions)
+      ? ideaDiscussionData.decisions.filter(x => x && newNames.has(x.proposal))
+      : [];
+    ideaDiscussionData = {discussion: data.discussion, proposals: data.proposals, evaluations: data.evaluations, open_questions: data.open_questions, decisions: keptDecisions} || null;
     ideaSelectedProposal = data.selected_proposal || proposal || "";
+    if (proposal) recordDecision(ideaSelectedProposal, "确认", (decisionOf(ideaDiscussionData, ideaSelectedProposal) || {}).reason || "");
     renderDiscussion(ideaDiscussionData, ideaSelectedProposal);
     renderIdeaChoices(ideaChoiceSchema);
     $("#ideaDraftPreview").innerHTML = renderIdeaPreview(data.preview);
@@ -1123,8 +1150,34 @@ async function makeIdeaDraft(proposal) {
   } catch (e) {
     status.textContent = e.message;
   } finally {
+    ideaDrafting = false;
     $("#makeDraftBtn").disabled = false;
   }
+}
+
+function renderRisk(risk) {
+  if (!risk) return "";
+  if (typeof risk === "string") return risk ? "<span class=\"risk\">　风险：" + esc(risk) + "</span>" : "";
+  const parts = [];
+  if (risk.content) parts.push("风险：" + esc(risk.content));
+  if (risk.severity) parts.push("<span class=\"sev sev-" + esc(risk.severity) + "\">" + esc(risk.severity) + "</span>");
+  if (risk.trigger) parts.push("触发：" + esc(risk.trigger));
+  if (risk.need_human) parts.push("<span class=\"need-human\">需人裁决</span>");
+  return parts.length ? "<span class=\"risk\">　" + parts.join("　") + "</span>" : "";
+}
+
+function decisionOf(d, name) {
+  return (d && Array.isArray(d.decisions) ? d.decisions : []).find(x => x && x.proposal === name) || null;
+}
+
+function recordDecision(name, action, reason) {
+  if (!ideaDiscussionData) return;
+  const list = Array.isArray(ideaDiscussionData.decisions) ? ideaDiscussionData.decisions : [];
+  // 同一方案只保留最新一条；确认同时只能有一个（换方案时旧的确认作废）
+  const rest = list.filter(x => x && x.proposal !== name && !(action === "确认" && x.action === "确认"));
+  rest.push({proposal: name, action, reason: reason || "", at: new Date().toISOString()});
+  ideaDiscussionData.decisions = rest;
+  scheduleEntrySave();
 }
 
 function renderDiscussion(d, selected) {
@@ -1134,38 +1187,119 @@ function renderDiscussion(d, selected) {
     "<div class=\"disc-role\"><span class=\"disc-role-tag\">" + esc(role.role) + "</span>" +
     role.points.map(p => "<div class=\"disc-point\">" + esc(p.content) +
       (p.basis ? "<span class=\"basis\">　依据：" + esc(p.basis) + "</span>" : "") +
-      (p.risk ? "<span class=\"risk\">　风险：" + esc(p.risk) + "</span>" : "") + "</div>"
+      renderRisk(p.risk) + "</div>"
     ).join("") + "</div>"
   ).join("");
   const proposals = (d.proposals || []).map(p => {
     const on = selected && p.name === selected ? " on" : "";
-    let html = "<div class=\"prop-card" + on + "\" data-proposal=\"" + esc(p.name) + "\">" +
+    const dec = decisionOf(d, p.name);
+    const state = dec && dec.action !== "确认" ? " " + (dec.action === "暂缓" ? "held" : "dropped") : "";
+    let html = "<div class=\"prop-card" + on + state + "\" data-proposal=\"" + esc(p.name) + "\">" +
       (on ? "<span class=\"prop-picked\">✓ 已选定</span>" : "") +
       "<div class=\"prop-name\">" + esc(p.name) + "</div><div class=\"prop-goal\">" + esc(p.goal) + "</div>";
     if ((p.capabilities || []).length) html += "<ul>" + p.capabilities.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>";
     if ((p.boundary || []).length) html += "<div class=\"prop-cond\">边界：" + esc(p.boundary.join("；")) + "</div>";
     if ((p.risks || []).length) html += "<div class=\"prop-cond\" style=\"color:#a3541d\">风险：" + esc(p.risks.join("；")) + "</div>";
     if (p.conditions) html += "<div class=\"prop-cond\">适用：" + esc(p.conditions) + "</div>";
+    html += "<div class=\"prop-actions\">" +
+      "<span class=\"prop-state\">" + (dec && dec.action !== "确认" ? "已" + esc(dec.action) : "") + "</span>" +
+      (on ? "" : "<button class=\"prop-act\" type=\"button\" data-act=\"暂缓\" data-for=\"" + esc(p.name) + "\">暂缓</button>") +
+      (on ? "" : "<button class=\"prop-act drop\" type=\"button\" data-act=\"不采纳\" data-for=\"" + esc(p.name) + "\">不采纳</button>") +
+      "</div>" +
+      (dec && dec.action !== "确认" ? "<input class=\"prop-reason\" data-reason=\"" + esc(p.name) + "\" placeholder=\"理由（可选，记入决策记录）\" value=\"" + esc(dec.reason || "") + "\">" : "");
     return html + "</div>";
   }).join("");
   const evals = (d.evaluations || []).map(ev =>
     "<div class=\"eval-row\"><span class=\"eval-verdict " + (ev.verdict === "支持" ? "support" : "doubt") + "\">" + esc(ev.verdict) + "</span>" +
-    "<span><b>" + esc(ev.role) + "</b> → " + esc(ev.proposal) + "　" + esc(ev.comment) +
-    (ev.risk ? "　<span class=\"risk\" style=\"color:#a3541d\">风险：" + esc(ev.risk) + "</span>" : "") + "</span></div>"
+    "<span><b>" + esc(ev.role) + "</b> → " + esc(ev.proposal) + "　" + esc(ev.comment) + renderRisk(ev.risk) + "</span></div>"
+  ).join("");
+  const decisions = (Array.isArray(d.decisions) ? d.decisions : []).map(x =>
+    "<div class=\"dec-row\"><span class=\"dec-act dec-" + esc(x.action) + "\">" + esc(x.action) + "</span><span>" + esc(x.proposal) +
+    (x.reason ? "　理由：" + esc(x.reason) : "") + "</span></div>"
   ).join("");
   const openq = (d.open_questions || []).length ? "<ul class=\"openq\">" + d.open_questions.map(q => "<li>" + esc(q) + "</li>").join("") + "</ul>" : "";
   box.innerHTML =
-    "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">多体讨论（观点清单）</span><span class=\"disc-sec-note\">观点来自固定四个角色，依据引用想法原文</span></div>" + roles + "</div>" +
-    "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">建设方案（点击选定，规格会按所选方案重新生成）</span><span class=\"disc-sec-note\">只有你选定的方案会进入规格</span></div><div class=\"prop-cards\">" + proposals + "</div></div>" +
+    "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">多体讨论（观点清单）</span><span class=\"disc-sec-note\">四角色固定，观点带依据、风险等级、触发条件与是否需裁决</span></div>" + roles + "</div>" +
+    "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">建设方案（点击卡片选定；不合适可暂缓或不采纳）</span><span class=\"disc-sec-note\">只有选定的方案会进入规格</span></div><div class=\"prop-cards\">" + proposals + "</div></div>" +
     "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">多方评价（分歧与风险）</span></div>" + evals + "</div>" +
-    (openq ? "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">未决问题（需你拍板）</span></div>" + openq + "</div>" : "");
+    (decisions ? "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">决策记录（你的取舍）</span></div>" + decisions + "</div>" : "") +
+    (openq ? "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">未决问题（需你拍板）</span></div>" + openq + "</div>" : "") +
+    "<div class=\"disc-export\"><button type=\"button\" id=\"exportDiscussionBtn\">导出讨论与评价记录（Markdown）</button></div>";
   box.hidden = false;
-  box.querySelectorAll(".prop-card").forEach(card => card.onclick = () => selectProposal(card.dataset.proposal));
+  box.querySelectorAll(".prop-card").forEach(card => card.onclick = (ev) => {
+    if (ev.target && ev.target.closest("button,input")) return;
+    selectProposal(card.dataset.proposal);
+  });
+  box.querySelectorAll(".prop-act").forEach(btn => btn.onclick = (ev) => {
+    ev.stopPropagation();
+    recordDecision(btn.dataset.for, btn.dataset.act, (decisionOf(ideaDiscussionData, btn.dataset.for) || {}).reason || "");
+    renderDiscussion(ideaDiscussionData, ideaSelectedProposal);
+  });
+  box.querySelectorAll(".prop-reason").forEach(input => input.onchange = () => {
+    const dec = decisionOf(ideaDiscussionData, input.dataset.reason);
+    if (dec) { dec.reason = input.value.trim().slice(0, 200); scheduleEntrySave(); }
+  });
+  const exportBtn = box.querySelector("#exportDiscussionBtn");
+  if (exportBtn) exportBtn.onclick = exportDiscussion;
 }
 
 async function selectProposal(name) {
-  if (!name || state.busy || name === ideaSelectedProposal) return;
+  if (!name || state.busy || ideaDrafting || name === ideaSelectedProposal) return;
   await makeIdeaDraft(name);
+}
+
+function buildDiscussionMarkdown() {
+  const d = ideaDiscussionData || {};
+  const idea = $("#ideaText").value.trim();
+  const lines = ["# 讨论与评价记录", "", "## 想法原文", idea || "（空）", ""];
+  if (ideaSelectedProposal) lines.push("## 已确认方案", ideaSelectedProposal, "");
+  lines.push("## 多体讨论（观点清单）");
+  (d.discussion || []).forEach(role => {
+    lines.push("", "### " + role.role);
+    (role.points || []).forEach(p => {
+      lines.push("- 观点：" + p.content);
+      if (p.basis) lines.push("  - 依据：" + p.basis);
+      const risk = p.risk;
+      if (risk && typeof risk === "object" && risk.content) {
+        lines.push("  - 风险：" + risk.content + (risk.severity ? "｜严重程度：" + risk.severity : "") + (risk.trigger ? "｜触发条件：" + risk.trigger : "") + (risk.need_human ? "｜需人裁决" : ""));
+      } else if (typeof risk === "string" && risk) {
+        lines.push("  - 风险：" + risk);
+      }
+    });
+  });
+  lines.push("", "## 建设方案");
+  (d.proposals || []).forEach(p => {
+    lines.push("", "### " + p.name, "- 目标：" + (p.goal || ""));
+    if ((p.capabilities || []).length) lines.push("- 核心能力：" + p.capabilities.join("；"));
+    if ((p.boundary || []).length) lines.push("- 边界：" + p.boundary.join("；"));
+    if ((p.risks || []).length) lines.push("- 风险：" + p.risks.join("；"));
+    if (p.conditions) lines.push("- 适用条件：" + p.conditions);
+  });
+  lines.push("", "## 多方评价");
+  (d.evaluations || []).forEach(ev => {
+    lines.push("- [" + ev.verdict + "] " + ev.role + " → " + ev.proposal + "：" + ev.comment +
+      (ev.risk && typeof ev.risk === "object" && ev.risk.content ? "（风险：" + ev.risk.content + (ev.risk.severity ? "｜" + ev.risk.severity : "") + "）" : ""));
+  });
+  const decisions = Array.isArray(d.decisions) ? d.decisions : [];
+  if (decisions.length) {
+    lines.push("", "## 决策记录");
+    decisions.forEach(x => lines.push("- " + x.action + "：" + x.proposal + (x.reason ? "（理由：" + x.reason + "）" : "")));
+  }
+  if ((d.open_questions || []).length) {
+    lines.push("", "## 未决问题");
+    d.open_questions.forEach(q => lines.push("- " + q));
+  }
+  return lines.join("\n") + "\n";
+}
+
+function exportDiscussion() {
+  if (!ideaDiscussionData) { $("#ideaDraftStatus").textContent = "还没有讨论记录可导出。"; return; }
+  const blob = new Blob([buildDiscussionMarkdown()], {type: "text/markdown;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "讨论与评价记录_" + new Date().toISOString().slice(0, 10) + ".md";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
 function renderIdeaChoices(groups) {
@@ -1231,6 +1365,10 @@ function confirmIdeaDraft() {
   if (!$("#ideaConfirmCheck").checked || !ideaChoicesApplied) return;
   const draft = ideaDraftCurrent.trim();
   if (!draft) { $("#ideaDraftStatus").textContent = "草稿为空，请先补充规格内容。"; return; }
+  // 人明确确认这一刻才写入决策记录，供导出与追溯
+  if (ideaDiscussionData && ideaSelectedProposal) {
+    recordDecision(ideaSelectedProposal, "确认", (decisionOf(ideaDiscussionData, ideaSelectedProposal) || {}).reason || "");
+  }
   $("#specText").value = draft;
   setEntryMode("spec");
   scheduleEntrySave();

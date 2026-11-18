@@ -12,6 +12,7 @@ from idea_to_spec import (
     _discussion,
     _evaluations,
     _proposals,
+    _risk,
     apply_choice_selections,
     discussion_template,
     draft_from_idea,
@@ -96,6 +97,31 @@ class TestIdeaToSpec(unittest.TestCase):
         ], {p["name"] for p in props})
         self.assertEqual(len(evals), 1)
         self.assertEqual(evals[0]["verdict"], "质疑")
+
+    def test_risk_normalizes_to_four_elements(self):
+        """风险必须归一到四要素：内容、严重程度、触发条件、是否需人裁决。
+
+        模型可能只给一句话（旧格式），此时不编造级别，只保留内容。
+        """
+        full = _risk({"content": "投票结果被质疑", "severity": "高", "trigger": "票数与名册不符", "need_human": True})
+        self.assertEqual(full, {"content": "投票结果被质疑", "severity": "高", "trigger": "票数与名册不符", "need_human": True})
+        legacy = _risk("交付延期风险")
+        self.assertEqual(legacy["content"], "交付延期风险")
+        self.assertEqual(legacy["severity"], "", "缺级别时不能自己编一个")
+        bad_level = _risk({"content": "x", "severity": "极高"})
+        self.assertEqual(bad_level["severity"], "", "非法级别必须丢弃")
+
+    def test_template_risks_are_structured(self):
+        """离线兜底也要符合作业一的四要素要求，不能退回一句话风险。"""
+        data = discussion_template("帮老旧小区做电梯加装协调")
+        for role in data["discussion"]:
+            for point in role["points"]:
+                risk = point["risk"]
+                self.assertIsInstance(risk, dict)
+                self.assertIn(risk["severity"], ("高", "中", "低"))
+                self.assertTrue(risk["trigger"], "触发条件不能为空")
+        self.assertTrue(any(p["risk"].get("need_human") for r in data["discussion"] for p in r["points"]),
+                        "至少要有一条需要人裁决的风险")
 
 
 if __name__ == "__main__":

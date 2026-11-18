@@ -106,9 +106,9 @@ acceptance：数组，整体验收条件，3–5 条。
 questions：数组，只列真正需要用户拍板的点，0–3 条；不要问能自己判断的事。
 users：数组，2–4 类主要使用者。
 platforms：数组，1–3 个建议平台。
-discussion：数组，固定 4 个角色，顺序为「商业分析」「用户体验」「技术挑刺」「架构与方案」，每项 {"role": 角色名, "points": [{"content": 观点, "basis": 依据, "risk": 风险或待确认项}]}，每角色 2–3 条观点。
+discussion：数组，固定 4 个角色，顺序为「商业分析」「用户体验」「技术挑刺」「架构与方案」，每项 {"role": 角色名, "points": [{"content": 观点, "basis": 依据, "risk": {"content": 风险或待确认项, "severity": "高|中|低", "trigger": 触发条件, "need_human": true|false}}]}，每角色 2–3 条观点。
 proposals：数组，2–3 个可比较的建设方案，每项 {"name": 方案名, "goal": 一句话目标, "capabilities": [核心能力 3–5 条], "boundary": [边界，不做的事 2–4 条], "risks": [主要风险 2–4 条], "conditions": 适用条件一句话}。
-evaluations：数组，3–6 条评价记录，每项 {"role": 评价角色（四角色之一）, "proposal": 被评方案名, "verdict": "支持|质疑", "comment": 评价内容, "risk": 风险或分歧点}；至少有一条「质疑」，并在 comment 里点明与哪个方案存在分歧。
+evaluations：数组，3–6 条评价记录，每项 {"role": 评价角色（四角色之一）, "proposal": 被评方案名, "verdict": "支持|质疑", "comment": 评价内容, "risk": {"content": 风险或分歧点, "severity": "高|中|低", "trigger": 触发条件, "need_human": true|false}}；至少有一条「质疑」，并在 comment 里点明与哪个方案存在分歧。
 open_questions：数组，讨论后仍未决、需要用户拍板的问题，2–4 条。
 
 硬性要求：
@@ -118,7 +118,10 @@ open_questions：数组，讨论后仍未决、需要用户拍板的问题，2�
 4. 想法里没提到的功能不要凭空加；确实需要但没提的，写进 questions 让用户确认。
 5. 优先级只用 P0/P1/P2：P0 是本产品不做就不能用的，P1 是首版应有，P2 是可延后。
 6. discussion 各角色的观点必须引用想法里的具体内容（basis 字段写依据，引用想法原文片段或由它推导的事实）；proposals 之间要有真实差异（范围、能力或实现方式不同，不能只是换个名字）；evaluations 必须针对 proposals 里的方案名评价。
-7. 默认生成的规格草稿对应 proposals 的第一个方案；如果用户消息里指定了已选方案，则规格必须对齐该方案的能力与边界。"""
+7. 默认生成的规格草稿对应 proposals 的第一个方案；如果用户消息里指定了已选方案，则规格必须对齐该方案的能力与边界。
+8. 风险必须写全：content（风险内容）、severity（高/中/低）、trigger（什么情况下会发生）、need_human（是否需要人裁决）。没有风险的点，risk.content 留空字符串。"""
+
+RISK_LEVELS = ("高", "中", "低")
 
 # 作业一规定的四个讨论角色，顺序固定
 DISCUSSION_ROLES = ("商业分析", "用户体验", "技术挑刺", "架构与方案")
@@ -218,7 +221,7 @@ def _discussion(value: Any) -> List[Dict[str, Any]]:
         role = _string(item.get("role"), 20)
         if role not in DISCUSSION_ROLES:
             continue
-        points: List[Dict[str, str]] = []
+        points: List[Dict[str, Any]] = []
         raw = item.get("points")
         if isinstance(raw, list):
             for p in raw[:4]:
@@ -230,7 +233,7 @@ def _discussion(value: Any) -> List[Dict[str, Any]]:
                 points.append({
                     "content": content,
                     "basis": _string(p.get("basis"), 300),
-                    "risk": _string(p.get("risk"), 300),
+                    "risk": _risk(p.get("risk")),
                 })
         if points:
             out.append({"role": role, "points": points})
@@ -238,6 +241,26 @@ def _discussion(value: Any) -> List[Dict[str, Any]]:
     order = {r: i for i, r in enumerate(DISCUSSION_ROLES)}
     out.sort(key=lambda x: order.get(x["role"], 99))
     return out
+
+
+def _risk(value: Any) -> Dict[str, Any]:
+    """风险归一到四要素：内容、严重程度、触发条件、是否需要人裁决。
+
+    模型可能只给一句字符串（旧格式），此时按缺省补全，不丢信息也不编造级别。
+    """
+    empty = {"content": "", "severity": "", "trigger": "", "need_human": False}
+    if isinstance(value, str):
+        text = value.strip()[:300]
+        return {**empty, "content": text} if text else empty
+    if not isinstance(value, dict):
+        return empty
+    severity = value.get("severity")
+    return {
+        "content": _string(value.get("content"), 300),
+        "severity": severity if severity in RISK_LEVELS else "",
+        "trigger": _string(value.get("trigger"), 200),
+        "need_human": bool(value.get("need_human")),
+    }
 
 
 def _proposals(value: Any) -> List[Dict[str, Any]]:
@@ -285,7 +308,7 @@ def _evaluations(value: Any, proposal_names: set) -> List[Dict[str, Any]]:
             "proposal": proposal,
             "verdict": verdict,
             "comment": comment,
-            "risk": _string(item.get("risk"), 300),
+            "risk": _risk(item.get("risk")),
         })
     return out
 
@@ -303,20 +326,28 @@ def discussion_template(idea: str) -> Dict[str, Any]:
     product = _guess_product(idea)
     discussion = [
         {"role": "商业分析", "points": [
-            {"content": f"想法面向{users}，核心诉求来自原文：「{idea[:40]}」。", "basis": "想法原文的目标用户与场景描述", "risk": "付费意愿与使用频率未验证，需用户确认"},
-            {"content": f"若首版聚焦「{features[0]}」即可跑通主流程，价值假设可以先小范围验证。", "basis": f"{label}画像的核心能力项", "risk": "范围过大时验证周期拉长"},
+            {"content": f"想法面向{users}，核心诉求来自原文：「{idea[:40]}」。", "basis": "想法原文的目标用户与场景描述",
+             "risk": {"content": "付费意愿与使用频率尚未验证", "severity": "中", "trigger": "首版上线后 4 周内无复访", "need_human": True}},
+            {"content": f"若首版聚焦「{features[0]}」即可跑通主流程，价值假设可以先小范围验证。", "basis": f"{label}画像的核心能力项",
+             "risk": {"content": "范围过大时验证周期拉长", "severity": "低", "trigger": "同时铺开 3 个以上方向", "need_human": False}},
         ]},
         {"role": "用户体验", "points": [
-            {"content": f"主流程应控制在三步以内：找到入口 → 完成「{features[0][:12]}」→ 拿到结果。", "basis": f"围绕{users}的任务路径推导", "risk": "步骤多于三步会显著流失"},
-            {"content": "首次使用不应强制注册；先体验价值再要求身份。", "basis": "通用体验原则，是否适用需用户确认", "risk": "若业务必须实名，需在方案里明确"},
+            {"content": f"主流程应控制在三步以内：找到入口 → 完成「{features[0][:12]}」→ 拿到结果。", "basis": f"围绕{users}的任务路径推导",
+             "risk": {"content": "步骤多于三步会显著流失", "severity": "中", "trigger": "主流程需要新增一个确认页", "need_human": False}},
+            {"content": "首次使用不应强制注册；先体验价值再要求身份。", "basis": "通用体验原则，是否适用需用户确认",
+             "risk": {"content": "业务若必须实名，体验方案要重做", "severity": "中", "trigger": "涉及支付或个人信息采集", "need_human": True}},
         ]},
         {"role": "技术挑刺", "points": [
-            {"content": f"「{features[-1][:14]}」涉及的状态与并发是首版最大的技术风险点。", "basis": f"{label}画像末项能力的数据一致性要求", "risk": "未定义异常分支会导致返工"},
-            {"content": "想法未提及数据安全与隐私边界，需要补充。", "basis": "原文中无相关描述", "risk": "涉及个人信息时合规风险高，需用户拍板"},
+            {"content": f"「{features[-1][:14]}」涉及的状态与并发是首版最大的技术风险点。", "basis": f"{label}画像末项能力的数据一致性要求",
+             "risk": {"content": "未定义异常分支会导致返工", "severity": "高", "trigger": "两人以上同时对同一记录操作", "need_human": False}},
+            {"content": "想法未提及数据安全与隐私边界，需要补充。", "basis": "原文中无相关描述",
+             "risk": {"content": "涉及个人信息时存在合规风险", "severity": "高", "trigger": "采集手机号、位置或身份证信息", "need_human": True}},
         ]},
         {"role": "架构与方案", "points": [
-            {"content": f"建议按业务对象拆模块：{('、'.join(features[:3]))}各自成模块，边界清晰。", "basis": f"从想法原文抽出的业务对象", "risk": "模块间依赖需要在方案里明确"},
-            {"content": "首版架构应预留扩展点，避免范围确认后推翻结构。", "basis": f"{label}场景常见演进路径", "risk": "过度预留会增加首版复杂度"},
+            {"content": f"建议按业务对象拆模块：{('、'.join(features[:3]))}各自成模块，边界清晰。", "basis": "从想法原文抽出的业务对象",
+             "risk": {"content": "模块间依赖需要在方案里明确", "severity": "低", "trigger": "同一实体被两个模块同时维护", "need_human": False}},
+            {"content": "首版架构应预留扩展点，避免范围确认后推翻结构。", "basis": f"{label}场景常见演进路径",
+             "risk": {"content": "过度预留会增加首版复杂度", "severity": "低", "trigger": "为未确认功能提前建表建服务", "need_human": False}},
         ]},
     ]
     proposals = [
@@ -326,10 +357,14 @@ def discussion_template(idea: str) -> Dict[str, Any]:
          "capabilities": features[:5], "boundary": ["不含运营后台的复杂配置"], "risks": ["范围大、周期长", "未验证的功能可能做错方向"], "conditions": "适合对需求把握较大时"},
     ]
     evaluations = [
-        {"role": "商业分析", "proposal": "方案 A · 最小闭环", "verdict": "支持", "comment": "先验证核心价值再扩范围，投入风险最小。", "risk": ""},
-        {"role": "用户体验", "proposal": "方案 A · 最小闭环", "verdict": "支持", "comment": "主流程短，首版体验更容易打磨。", "risk": ""},
-        {"role": "技术挑刺", "proposal": "方案 B · 首版完整", "verdict": "质疑", "comment": "未验证前铺开全部能力，返工概率高；与方案 A 的渐进路线存在分歧。", "risk": "周期与质量风险"},
-        {"role": "架构与方案", "proposal": "方案 B · 首版完整", "verdict": "支持", "comment": "模块一次划分到位，后期不需要结构性返工。", "risk": ""},
+        {"role": "商业分析", "proposal": "方案 A · 最小闭环", "verdict": "支持", "comment": "先验证核心价值再扩范围，投入风险最小。",
+         "risk": {"content": "", "severity": "", "trigger": "", "need_human": False}},
+        {"role": "用户体验", "proposal": "方案 A · 最小闭环", "verdict": "支持", "comment": "主流程短，首版体验更容易打磨。",
+         "risk": {"content": "", "severity": "", "trigger": "", "need_human": False}},
+        {"role": "技术挑刺", "proposal": "方案 B · 首版完整", "verdict": "质疑", "comment": "未验证前铺开全部能力，返工概率高；与方案 A 的渐进路线存在分歧。",
+         "risk": {"content": "周期与质量风险", "severity": "高", "trigger": "首版同时交付 5 个以上能力", "need_human": True}},
+        {"role": "架构与方案", "proposal": "方案 B · 首版完整", "verdict": "支持", "comment": "模块一次划分到位，后期不需要结构性返工。",
+         "risk": {"content": "", "severity": "", "trigger": "", "need_human": False}},
     ]
     return {
         "discussion": discussion,
