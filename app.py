@@ -48,18 +48,30 @@ EXAMPLES = os.path.join(ROOT, "examples")
 PROJECTS = os.path.join(ROOT, "projects")
 
 _LOCK = threading.Lock()
-_PIPELINE = Pipeline()
+_LLM_CFG = load_llm_config()
+# 演示开关：只让"任务分解"走规则，而"想法→规格"仍然可用模型。
+# 规则分解 <0.05s 且条数可复现（39/43/64），适合现场演示；模型分解约 20s。
+_RULE_DECOMPOSE = (os.environ.get("SE_WORKFLOW_RULE_DECOMPOSE") or "").strip().lower() in ("1", "true", "yes")
+_PIPELINE = Pipeline(
+    LLMConfig(api_key=_LLM_CFG.api_key, base_url=_LLM_CFG.base_url, model=_LLM_CFG.model, enabled=False)
+    if _RULE_DECOMPOSE
+    else _LLM_CFG
+)
 
 
-def build_draft(idea: str, details: str = "") -> dict:
-    """想法 → 规格草稿：模型优先（任意领域都能进），失败退回快速模板并说明原因。"""
-    cfg = _PIPELINE.llm_cfg
+def build_draft(idea: str, details: str = "", proposal: str = "") -> dict:
+    """想法 → 多体讨论 + 建设方案 + 多方评价 + 规格草稿。
+
+    proposal 非空表示用户已选定方案，规格对齐该方案重新生成。
+    模型优先（任意领域都能进），失败退回快速模板并说明原因。
+    """
+    cfg = _LLM_CFG
     if cfg.available:
         # 入口要"敢等"一点，但别把浏览器拖死：单独给 45s 上限
         quick = LLMConfig(api_key=cfg.api_key, base_url=cfg.base_url, model=cfg.model, timeout=45, enabled=cfg.enabled)
         started = time.time()
         try:
-            draft = draft_from_idea_llm(idea, details, quick)
+            draft = draft_from_idea_llm(idea, details, quick, proposal=proposal)
             draft["elapsed"] = round(time.time() - started, 1)
             return draft
         except ValueError:
@@ -250,7 +262,7 @@ class Handler(BaseHTTPRequestHandler):
                 for name in sorted(wanted):
                     with open(os.path.join(_project_dir(pid), "files", name), "r", encoding="utf-8") as f:
                         context.append(f"--- {name} ---\n{f.read()[:30000]}")
-                if not _PIPELINE.llm_cfg.available:
+                if not _LLM_CFG.available:
                     return self._json({"ok": False, "error": "项目聊天需要配置 DeepSeek API Key；项目文件和历史仍保存在本地。"}, 503)
                 from llm import DeepSeekClient
                 system = "你是项目工作区中的开发助手。优先依据用户明确选中的项目文件回答；没有提供文件时，不要声称看过项目资料。用中文清晰回答。"
@@ -260,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
                     messages.append({"role": "system", "content": "以下是用户本次明确选作上下文的文件内容：\n" + "\n\n".join(context)})
                 messages.extend({"role": m["role"], "content": m["content"]} for m in history if m.get("role") in ("user", "assistant"))
                 messages.append({"role": "user", "content": message})
-                answer = DeepSeekClient(_PIPELINE.llm_cfg).chat(messages)
+                answer = DeepSeekClient(_LLM_CFG).chat(messages)
                 now = _now()
                 project.setdefault("messages", []).extend([
                     {"role": "user", "content": message, "created_at": now, "context_files": sorted(wanted)},
@@ -293,8 +305,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/draft-spec":
                 idea = str(body.get("idea") or "")
                 details = str(body.get("details") or "")
+                proposal = str(body.get("proposal") or "")
                 try:
-                    draft = build_draft(idea, details)
+                    draft = build_draft(idea, details, proposal=proposal)
                     draft["preview"] = parse_spec(draft["draft_markdown"]).to_dict()
                     return self._json(draft)
                 except ValueError as exc:

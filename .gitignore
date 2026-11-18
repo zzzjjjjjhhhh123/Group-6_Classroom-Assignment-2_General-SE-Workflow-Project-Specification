@@ -6,6 +6,8 @@ __pycache__/
 *.py[cod]
 server.log
 server-error.log
+demo_server.log
+*.log
 
 # 汇报 PPT 的构建脚本与素材（含 node_modules、截图，体积上百 MB）
 _ppt/
