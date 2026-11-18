@@ -50,7 +50,7 @@ def draft_from_idea(idea: str, details: str = "") -> Dict[str, Any]:
         questions = ["请检查下面的规格草稿，确认功能范围和优先级符合你的想法。"]
 
     markdown = _to_markdown(product, goal, modules, non_functional, constraints, acceptance)
-    return {
+    result = {
         "ok": True,
         "mode": mode,
         "warning": warning,
@@ -61,6 +61,9 @@ def draft_from_idea(idea: str, details: str = "") -> Dict[str, Any]:
         "has_requirements": bool(modules),
         "notice": "先选定你确认的用户、功能和范围，选项会自动写入规格摘要。",
     }
+    result.update(discussion_template(idea))
+    result["selected_proposal"] = ""
+    return result
 
 
 def classify_idea(idea: str) -> Dict[str, Any]:
@@ -103,26 +106,38 @@ acceptance：数组，整体验收条件，3–5 条。
 questions：数组，只列真正需要用户拍板的点，0–3 条；不要问能自己判断的事。
 users：数组，2–4 类主要使用者。
 platforms：数组，1–3 个建议平台。
+discussion：数组，固定 4 个角色，顺序为「商业分析」「用户体验」「技术挑刺」「架构与方案」，每项 {"role": 角色名, "points": [{"content": 观点, "basis": 依据, "risk": 风险或待确认项}]}，每角色 2–3 条观点。
+proposals：数组，2–3 个可比较的建设方案，每项 {"name": 方案名, "goal": 一句话目标, "capabilities": [核心能力 3–5 条], "boundary": [边界，不做的事 2–4 条], "risks": [主要风险 2–4 条], "conditions": 适用条件一句话}。
+evaluations：数组，3–6 条评价记录，每项 {"role": 评价角色（四角色之一）, "proposal": 被评方案名, "verdict": "支持|质疑", "comment": 评价内容, "risk": 风险或分歧点}；至少有一条「质疑」，并在 comment 里点明与哪个方案存在分歧。
+open_questions：数组，讨论后仍未决、需要用户拍板的问题，2–4 条。
 
 硬性要求：
 1. 每个模块 3–4 条需求，需求必须写成「谁 + 对什么对象 + 做什么 + 得到什么结果」，可被判定是否完成。
 2. 严禁通用空话：不许出现「浏览核心内容」「提交核心操作」「查看处理进度」「管理个人信息」「注册或登录」这类不针对本产品的表述。
 3. 模块名必须来自这段想法里的业务对象（例如"宠物档案""疫苗记录""寄养预约"），不能是"用户模块""核心模块""业务模块"。
 4. 想法里没提到的功能不要凭空加；确实需要但没提的，写进 questions 让用户确认。
-5. 优先级只用 P0/P1/P2：P0 是本产品不做就不能用的，P1 是首版应有，P2 是可延后。"""
+5. 优先级只用 P0/P1/P2：P0 是本产品不做就不能用的，P1 是首版应有，P2 是可延后。
+6. discussion 各角色的观点必须引用想法里的具体内容（basis 字段写依据，引用想法原文片段或由它推导的事实）；proposals 之间要有真实差异（范围、能力或实现方式不同，不能只是换个名字）；evaluations 必须针对 proposals 里的方案名评价。
+7. 默认生成的规格草稿对应 proposals 的第一个方案；如果用户消息里指定了已选方案，则规格必须对齐该方案的能力与边界。"""
+
+# 作业一规定的四个讨论角色，顺序固定
+DISCUSSION_ROLES = ("商业分析", "用户体验", "技术挑刺", "架构与方案")
+EVAL_VERDICTS = ("支持", "质疑")
 
 # 用户最容易被"套模板"的地方：这些空话一旦占比过高，说明模型没读懂想法
 GENERIC_PHRASES = ("浏览核心内容", "提交核心操作", "查看处理进度", "管理个人信息", "核心内容或服务")
 MODULE_NOISE_RE = re.compile(r"^\s*(?:\d{1,2}\s*[.、)）]|[（(]\s*\d{1,2}\s*[)）]|[一二三四五六七八九十]{1,3}\s*[、.）)])\s*")
 
 
-def draft_from_idea_llm(idea: str, details: str = "", llm_cfg: Optional[LLMConfig] = None) -> Dict[str, Any]:
-    """模型路径：任意领域想法 → 结构化规格草稿。
+def draft_from_idea_llm(idea: str, details: str = "", llm_cfg: Optional[LLMConfig] = None, proposal: str = "") -> Dict[str, Any]:
+    """模型路径：任意领域想法 → 多体讨论 + 建设方案 + 多方评价 + 规格草稿。
 
+    proposal 非空时表示用户已从方案中选定了一个，规格对齐该方案重新生成。
     失败一律抛 LLMError（由调用方决定是否降级到快速模板），不返回半成品。
     """
     idea = str(idea or "").strip()
     details = str(details or "").strip()
+    proposal = str(proposal or "").strip()[:120]
     if len(idea) < 3:
         raise ValueError("请至少用几个字描述你想做什么")
     if len(idea) > 4000 or len(details) > 6000:
@@ -131,7 +146,10 @@ def draft_from_idea_llm(idea: str, details: str = "", llm_cfg: Optional[LLMConfi
         raise LLMError("未配置 DEEPSEEK_API_KEY，无法用模型生成规格")
 
     client = DeepSeekClient(llm_cfg)
-    user = json.dumps({"idea": idea, "details": details}, ensure_ascii=False)
+    user_payload: Dict[str, Any] = {"idea": idea, "details": details}
+    if proposal:
+        user_payload["selected_proposal"] = proposal
+    user = json.dumps(user_payload, ensure_ascii=False)
     data = client.chat_json(DRAFT_SYSTEM, user)
     if isinstance(data, dict) and isinstance(data.get("spec"), dict):
         data = data["spec"]
@@ -164,6 +182,11 @@ def draft_from_idea_llm(idea: str, details: str = "", llm_cfg: Optional[LLMConfi
     if not questions:
         questions = ["请检查模块划分是否覆盖了你想做的事情；没有的请补，多余的请删。"]
 
+    discussion = _discussion(data.get("discussion"))
+    proposals = _proposals(data.get("proposals"))
+    evaluations = _evaluations(data.get("evaluations"), {p["name"] for p in proposals})
+    open_questions = _strings(data.get("open_questions"), 4, 200)
+
     markdown = _to_markdown(product, goal, modules, non_functional, constraints, acceptance)
     return {
         "ok": True,
@@ -175,7 +198,144 @@ def draft_from_idea_llm(idea: str, details: str = "", llm_cfg: Optional[LLMConfi
         "choice_questions": _llm_choice_questions(users, platforms),
         "has_requirements": True,
         "stats": {"modules": len(modules), "requirements": total},
-        "notice": f"已按你的描述生成 {len(modules)} 个模块、{total} 条需求。请确认范围后再运行——模型没读到的功能不会自己补。",
+        "discussion": discussion,
+        "proposals": proposals,
+        "evaluations": evaluations,
+        "open_questions": open_questions,
+        "selected_proposal": proposal or (proposals[0]["name"] if proposals else ""),
+        "notice": f"已按你的描述完成多角色讨论并生成 {len(proposals)} 个可比较方案。请选择方案、确认规格后再进入任务分解——模型没读到的功能不会自己补。",
+    }
+
+
+def _discussion(value: Any) -> List[Dict[str, Any]]:
+    """校验多体讨论观点清单：角色必须是规定的四个，观点/依据/风险齐全。"""
+    if not isinstance(value, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in value[:4]:
+        if not isinstance(item, dict):
+            continue
+        role = _string(item.get("role"), 20)
+        if role not in DISCUSSION_ROLES:
+            continue
+        points: List[Dict[str, str]] = []
+        raw = item.get("points")
+        if isinstance(raw, list):
+            for p in raw[:4]:
+                if not isinstance(p, dict):
+                    continue
+                content = _string(p.get("content"), 300)
+                if not content:
+                    continue
+                points.append({
+                    "content": content,
+                    "basis": _string(p.get("basis"), 300),
+                    "risk": _string(p.get("risk"), 300),
+                })
+        if points:
+            out.append({"role": role, "points": points})
+    # 保证角色顺序与作业说明一致
+    order = {r: i for i, r in enumerate(DISCUSSION_ROLES)}
+    out.sort(key=lambda x: order.get(x["role"], 99))
+    return out
+
+
+def _proposals(value: Any) -> List[Dict[str, Any]]:
+    """校验建设方案草案：2–3 个，能力/边界/风险齐全，名称不重复。"""
+    if not isinstance(value, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for item in value[:4]:
+        if not isinstance(item, dict):
+            continue
+        name = _string(item.get("name"), 60)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        proposal = {
+            "name": name,
+            "goal": _string(item.get("goal"), 300),
+            "capabilities": _strings(item.get("capabilities"), 6, 150),
+            "boundary": _strings(item.get("boundary"), 6, 150),
+            "risks": _strings(item.get("risks"), 6, 150),
+            "conditions": _string(item.get("conditions"), 300),
+        }
+        if proposal["capabilities"]:
+            out.append(proposal)
+    return out
+
+
+def _evaluations(value: Any, proposal_names: set) -> List[Dict[str, Any]]:
+    """校验评价记录：角色合法、指向已存在的方案、结论只支持/质疑。"""
+    if not isinstance(value, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in value[:8]:
+        if not isinstance(item, dict):
+            continue
+        role = _string(item.get("role"), 20)
+        proposal = _string(item.get("proposal"), 60)
+        verdict = _string(item.get("verdict"), 10)
+        comment = _string(item.get("comment"), 400)
+        if role not in DISCUSSION_ROLES or proposal not in proposal_names or verdict not in EVAL_VERDICTS or not comment:
+            continue
+        out.append({
+            "role": role,
+            "proposal": proposal,
+            "verdict": verdict,
+            "comment": comment,
+            "risk": _string(item.get("risk"), 300),
+        })
+    return out
+
+
+def discussion_template(idea: str) -> Dict[str, Any]:
+    """离线兜底：按行业画像生成四角色观点 + 两个方案 + 评价记录。
+
+    观点全部围绕想法原文与画像内容展开，并在 mode 里明确标注是模板，
+    不冒充模型讨论。结构与模型路径完全一致，前端无需区分。
+    """
+    profile = classify_idea(idea)
+    label = profile["label"]
+    users = "、".join(profile["users"][:2])
+    features = profile["features"]
+    product = _guess_product(idea)
+    discussion = [
+        {"role": "商业分析", "points": [
+            {"content": f"想法面向{users}，核心诉求来自原文：「{idea[:40]}」。", "basis": "想法原文的目标用户与场景描述", "risk": "付费意愿与使用频率未验证，需用户确认"},
+            {"content": f"若首版聚焦「{features[0]}」即可跑通主流程，价值假设可以先小范围验证。", "basis": f"{label}画像的核心能力项", "risk": "范围过大时验证周期拉长"},
+        ]},
+        {"role": "用户体验", "points": [
+            {"content": f"主流程应控制在三步以内：找到入口 → 完成「{features[0][:12]}」→ 拿到结果。", "basis": f"围绕{users}的任务路径推导", "risk": "步骤多于三步会显著流失"},
+            {"content": "首次使用不应强制注册；先体验价值再要求身份。", "basis": "通用体验原则，是否适用需用户确认", "risk": "若业务必须实名，需在方案里明确"},
+        ]},
+        {"role": "技术挑刺", "points": [
+            {"content": f"「{features[-1][:14]}」涉及的状态与并发是首版最大的技术风险点。", "basis": f"{label}画像末项能力的数据一致性要求", "risk": "未定义异常分支会导致返工"},
+            {"content": "想法未提及数据安全与隐私边界，需要补充。", "basis": "原文中无相关描述", "risk": "涉及个人信息时合规风险高，需用户拍板"},
+        ]},
+        {"role": "架构与方案", "points": [
+            {"content": f"建议按业务对象拆模块：{('、'.join(features[:3]))}各自成模块，边界清晰。", "basis": f"从想法原文抽出的业务对象", "risk": "模块间依赖需要在方案里明确"},
+            {"content": "首版架构应预留扩展点，避免范围确认后推翻结构。", "basis": f"{label}场景常见演进路径", "risk": "过度预留会增加首版复杂度"},
+        ]},
+    ]
+    proposals = [
+        {"name": "方案 A · 最小闭环", "goal": f"用最少功能跑通{product}的主流程，先让{users}用起来。",
+         "capabilities": features[:3], "boundary": ["不含支付等重流程", "不含多端同步"], "risks": ["功能少可能无法验证完整价值"], "conditions": "适合快速验证想法是否成立"},
+        {"name": "方案 B · 首版完整", "goal": f"覆盖{label}画像的主要能力，一次性交付可用版本。",
+         "capabilities": features[:5], "boundary": ["不含运营后台的复杂配置"], "risks": ["范围大、周期长", "未验证的功能可能做错方向"], "conditions": "适合对需求把握较大时"},
+    ]
+    evaluations = [
+        {"role": "商业分析", "proposal": "方案 A · 最小闭环", "verdict": "支持", "comment": "先验证核心价值再扩范围，投入风险最小。", "risk": ""},
+        {"role": "用户体验", "proposal": "方案 A · 最小闭环", "verdict": "支持", "comment": "主流程短，首版体验更容易打磨。", "risk": ""},
+        {"role": "技术挑刺", "proposal": "方案 B · 首版完整", "verdict": "质疑", "comment": "未验证前铺开全部能力，返工概率高；与方案 A 的渐进路线存在分歧。", "risk": "周期与质量风险"},
+        {"role": "架构与方案", "proposal": "方案 B · 首版完整", "verdict": "支持", "comment": "模块一次划分到位，后期不需要结构性返工。", "risk": ""},
+    ]
+    return {
+        "discussion": discussion,
+        "proposals": proposals,
+        "evaluations": evaluations,
+        "open_questions": [f"首版选方案 A 还是方案 B？（模板建议，请用户拍板）", "数据安全与隐私边界需要补充确认。"],
     }
 
 

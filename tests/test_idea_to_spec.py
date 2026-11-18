@@ -7,7 +7,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config import LLMConfig
-from idea_to_spec import apply_choice_selections, draft_from_idea, draft_from_idea_llm
+from idea_to_spec import (
+    DISCUSSION_ROLES,
+    _discussion,
+    _evaluations,
+    _proposals,
+    apply_choice_selections,
+    discussion_template,
+    draft_from_idea,
+    draft_from_idea_llm,
+)
 from llm import LLMError
 
 
@@ -48,6 +57,45 @@ class TestIdeaToSpec(unittest.TestCase):
         )
         self.assertNotIn("外星人", merged)
         self.assertNotIn("脑机接口", merged)
+
+    def test_discussion_template_covers_four_roles(self):
+        """离线兜底的讨论记录必须覆盖作业一规定的四个角色，观点引用想法内容。"""
+        data = discussion_template("帮老旧小区做电梯加装协调：住户投票、费用分摊、进度公示")
+        roles = [r["role"] for r in data["discussion"]]
+        self.assertEqual(roles, list(DISCUSSION_ROLES))
+        self.assertGreaterEqual(len(data["proposals"]), 2)
+        names = {p["name"] for p in data["proposals"]}
+        for ev in data["evaluations"]:
+            self.assertIn(ev["proposal"], names)
+            self.assertIn(ev["verdict"], ("支持", "质疑"))
+        self.assertTrue(any(ev["verdict"] == "质疑" for ev in data["evaluations"]), "必须存在分歧记录")
+        # 观点必须围绕想法本身，不能出现通用空话
+        joined = "".join(p["content"] for r in data["discussion"] for p in r["points"])
+        self.assertIn("电梯", joined)
+
+    def test_discussion_validation_drops_dirty_items(self):
+        """模型返回的讨论/方案/评价要过结构校验：非法角色、无效方案名、脏结论一律丢弃。"""
+        raw = [
+            {"role": "吃瓜群众", "points": [{"content": "x"}]},                    # 角色不合法
+            {"role": "商业分析", "points": []},                                    # 没有观点
+            {"role": "用户体验", "points": [{"content": "主流程应短", "basis": "原文"}]},
+        ]
+        clean = _discussion(raw)
+        self.assertEqual([r["role"] for r in clean], ["用户体验"])
+        props = _proposals([
+            {"name": "", "capabilities": ["a"]},                                   # 空名字
+            {"name": "方案A", "goal": "g", "capabilities": ["跑通主流程"]},
+            {"name": "方案A", "goal": "重复名字应丢弃", "capabilities": ["x"]},
+            {"name": "方案B", "goal": "g"},                                        # 没有核心能力
+        ])
+        self.assertEqual([p["name"] for p in props], ["方案A"])
+        evals = _evaluations([
+            {"role": "商业分析", "proposal": "不存在的方案", "verdict": "支持", "comment": "x"},  # 方案名无效
+            {"role": "技术挑刺", "proposal": "方案A", "verdict": "无所谓", "comment": "x"},      # 结论非法
+            {"role": "技术挑刺", "proposal": "方案A", "verdict": "质疑", "comment": "范围过大"},
+        ], {p["name"] for p in props})
+        self.assertEqual(len(evals), 1)
+        self.assertEqual(evals[0]["verdict"], "质疑")
 
 
 if __name__ == "__main__":

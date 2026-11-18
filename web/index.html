@@ -366,6 +366,31 @@
   .idea-panel textarea{min-height:78px;height:78px;font-family:inherit}
   .idea-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
   .idea-draft{margin-top:16px;padding-top:14px;border-top:1px solid #e7ebf2}
+  .disc-sec{margin:10px 0;padding:11px 13px;border:1px solid #e2e7f0;border-radius:10px;background:#fbfcfe}
+  .disc-sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+  .disc-sec-title{color:#34415b;font-size:11px;font-weight:700}
+  .disc-sec-note{color:#8d93a0;font-size:10px}
+  .disc-role{margin:0 0 8px;padding:8px 10px;border:1px solid #e7ebf2;border-radius:8px;background:#fff}
+  .disc-role-tag{display:inline-block;margin-bottom:5px;padding:1px 8px;border-radius:8px;background:#eef1ff;color:#4c63d0;font-size:10px;font-weight:700}
+  .disc-point{margin:4px 0;color:#34415b;font-size:11px;line-height:1.65}
+  .disc-point b{color:#222c44}
+  .disc-point .basis{color:#5b6b7d}
+  .disc-point .risk{color:#a3541d}
+  .prop-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
+  .prop-card{position:relative;padding:10px 12px;border:1.5px solid #e2e7f0;border-radius:9px;background:#fff;cursor:pointer;transition:border-color .15s}
+  .prop-card:hover{border-color:#9db1ef}
+  .prop-card.on{border-color:#4c63d0;background:#f4f6ff}
+  .prop-card .prop-name{color:#222c44;font-size:11px;font-weight:700;margin-bottom:4px}
+  .prop-card .prop-goal{color:#34415b;font-size:10.5px;line-height:1.6;margin-bottom:5px}
+  .prop-card ul{margin:3px 0;padding-left:16px;color:#5b6b7d;font-size:10.5px;line-height:1.6}
+  .prop-card .prop-cond{margin-top:5px;color:#4c63d0;font-size:10px}
+  .prop-picked{position:absolute;top:8px;right:10px;color:#4c63d0;font-size:10px;font-weight:700}
+  .eval-row{display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px dashed #edf0f5;color:#34415b;font-size:11px;line-height:1.6}
+  .eval-row:last-child{border-bottom:0}
+  .eval-verdict{flex:none;margin-top:1px;padding:0 7px;border-radius:8px;font-size:10px;font-weight:700}
+  .eval-verdict.support{background:#e5f5ec;color:#1d7a45}
+  .eval-verdict.doubt{background:#fdeaea;color:#b03a2e}
+  .openq li{margin:3px 0;color:#765b1e;font-size:11px;line-height:1.65}
   .idea-questions{padding:10px 13px;margin:8px 0;background:#fff8e8;border:1px solid #f2e2b8;border-radius:9px;color:#765b1e;font-size:11px;line-height:1.7}
   .choice-group{padding:9px 0 11px;border-bottom:1px solid #edf0f5}
   .choice-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
@@ -789,7 +814,8 @@
             <textarea id="ideaText" placeholder="例如：我想做一个点餐小程序，帮助附近上班族快速点餐。"></textarea>
             <div class="idea-actions"><span class="idea-status" id="ideaDraftStatus">先写一句想法；之后通过选项补充，规格摘要会自动更新。</span><button class="primary" id="makeDraftBtn" type="button">整理并给出选项</button></div>
             <div class="idea-draft" id="ideaDraftPanel" hidden>
-              <b>待确认的规格草稿</b>
+              <b>讨论记录与待确认的规格草稿</b>
+              <div class="idea-discussion" id="ideaDiscussion" hidden></div>
               <div id="ideaChoices"></div>
               <div class="idea-questions" id="ideaQuestions" hidden></div>
               <div class="idea-actions"><span class="idea-status">选项变化后，规格摘要会自动更新。</span></div>
@@ -879,6 +905,8 @@ let ideaChoicesApplied = false;
 let ideaChoiceRevision = 0;
 let ideaApplyTimer = null;
 let ideaDraftPreviewData = null;
+let ideaDiscussionData = null;
+let ideaSelectedProposal = "";
 let entrySaveTimer = null;
 let restoringEntry = false;
 
@@ -1054,21 +1082,27 @@ function setEntryMode(mode) {
   scheduleEntrySave();
 }
 
-async function makeIdeaDraft() {
+async function makeIdeaDraft(proposal) {
   const idea = $("#ideaText").value.trim();
+  proposal = typeof proposal === "string" ? proposal.slice(0, 120) : "";
   const status = $("#ideaDraftStatus");
   if (!idea) { status.textContent = "先写一句你想做什么。"; $("#ideaText").focus(); return; }
   if (state.busy) return;
   $("#makeDraftBtn").disabled = true;
-  status.textContent = "正在按你的描述生成规格…（约 10 秒；失败会自动退回模板）";
+  status.textContent = proposal
+    ? "已选定方案，正在按该方案重新生成规格…（约 10 秒）"
+    : "正在组织多角色讨论、比较建设方案…（约 10 秒；失败会自动退回模板）";
   try {
-    const data = await api("/api/draft-spec", {idea});
+    const data = await api("/api/draft-spec", {idea, proposal});
     ideaDraftBase = data.draft_markdown || "";
     ideaDraftCurrent = ideaDraftBase;
     ideaChoiceSchema = data.choice_questions || [];
     ideaChoicesApplied = false;
     ideaChoiceRevision++;
     ideaDraftPreviewData = data.preview || null;
+    ideaDiscussionData = {discussion: data.discussion, proposals: data.proposals, evaluations: data.evaluations, open_questions: data.open_questions} || null;
+    ideaSelectedProposal = data.selected_proposal || proposal || "";
+    renderDiscussion(ideaDiscussionData, ideaSelectedProposal);
     renderIdeaChoices(ideaChoiceSchema);
     $("#ideaDraftPreview").innerHTML = renderIdeaPreview(data.preview);
     const warning = data.warning ? " · " + esc(data.warning) : "";
@@ -1091,6 +1125,47 @@ async function makeIdeaDraft() {
   } finally {
     $("#makeDraftBtn").disabled = false;
   }
+}
+
+function renderDiscussion(d, selected) {
+  const box = $("#ideaDiscussion");
+  if (!d || !d.discussion || !d.discussion.length) { box.hidden = true; box.innerHTML = ""; return; }
+  const roles = d.discussion.map(role =>
+    "<div class=\"disc-role\"><span class=\"disc-role-tag\">" + esc(role.role) + "</span>" +
+    role.points.map(p => "<div class=\"disc-point\">" + esc(p.content) +
+      (p.basis ? "<span class=\"basis\">　依据：" + esc(p.basis) + "</span>" : "") +
+      (p.risk ? "<span class=\"risk\">　风险：" + esc(p.risk) + "</span>" : "") + "</div>"
+    ).join("") + "</div>"
+  ).join("");
+  const proposals = (d.proposals || []).map(p => {
+    const on = selected && p.name === selected ? " on" : "";
+    let html = "<div class=\"prop-card" + on + "\" data-proposal=\"" + esc(p.name) + "\">" +
+      (on ? "<span class=\"prop-picked\">✓ 已选定</span>" : "") +
+      "<div class=\"prop-name\">" + esc(p.name) + "</div><div class=\"prop-goal\">" + esc(p.goal) + "</div>";
+    if ((p.capabilities || []).length) html += "<ul>" + p.capabilities.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>";
+    if ((p.boundary || []).length) html += "<div class=\"prop-cond\">边界：" + esc(p.boundary.join("；")) + "</div>";
+    if ((p.risks || []).length) html += "<div class=\"prop-cond\" style=\"color:#a3541d\">风险：" + esc(p.risks.join("；")) + "</div>";
+    if (p.conditions) html += "<div class=\"prop-cond\">适用：" + esc(p.conditions) + "</div>";
+    return html + "</div>";
+  }).join("");
+  const evals = (d.evaluations || []).map(ev =>
+    "<div class=\"eval-row\"><span class=\"eval-verdict " + (ev.verdict === "支持" ? "support" : "doubt") + "\">" + esc(ev.verdict) + "</span>" +
+    "<span><b>" + esc(ev.role) + "</b> → " + esc(ev.proposal) + "　" + esc(ev.comment) +
+    (ev.risk ? "　<span class=\"risk\" style=\"color:#a3541d\">风险：" + esc(ev.risk) + "</span>" : "") + "</span></div>"
+  ).join("");
+  const openq = (d.open_questions || []).length ? "<ul class=\"openq\">" + d.open_questions.map(q => "<li>" + esc(q) + "</li>").join("") + "</ul>" : "";
+  box.innerHTML =
+    "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">多体讨论（观点清单）</span><span class=\"disc-sec-note\">观点来自固定四个角色，依据引用想法原文</span></div>" + roles + "</div>" +
+    "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">建设方案（点击选定，规格会按所选方案重新生成）</span><span class=\"disc-sec-note\">只有你选定的方案会进入规格</span></div><div class=\"prop-cards\">" + proposals + "</div></div>" +
+    "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">多方评价（分歧与风险）</span></div>" + evals + "</div>" +
+    (openq ? "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">未决问题（需你拍板）</span></div>" + openq + "</div>" : "");
+  box.hidden = false;
+  box.querySelectorAll(".prop-card").forEach(card => card.onclick = () => selectProposal(card.dataset.proposal));
+}
+
+async function selectProposal(name) {
+  if (!name || state.busy || name === ideaSelectedProposal) return;
+  await makeIdeaDraft(name);
 }
 
 function renderIdeaChoices(groups) {
@@ -1699,6 +1774,8 @@ $("#ideaText").addEventListener("input", () => {
   ideaChoiceRevision++;
   clearTimeout(ideaApplyTimer);
   ideaDraftBase = ""; ideaDraftCurrent = ""; ideaChoicesApplied = false; ideaDraftPreviewData = null;
+  ideaDiscussionData = null; ideaSelectedProposal = "";
+  $("#ideaDiscussion").hidden = true; $("#ideaDiscussion").innerHTML = "";
   $("#ideaDraftPanel").hidden = true;
   $("#ideaConfirmCheck").checked = false;
   $("#ideaConfirmCheck").disabled = true;
@@ -1769,6 +1846,8 @@ function collectEntry() {
     preview: ideaDraftPreviewData || null,
     choice_questions: ideaChoiceSchema || [],
     choices_applied: !!ideaChoicesApplied,
+    discussion: ideaDiscussionData || null,
+    selected_proposal: ideaSelectedProposal || "",
     saved_at: new Date().toISOString(),
   };
 }
@@ -1796,6 +1875,8 @@ function restoreEntry(entry) {
   restoringEntry = true;
   ideaDraftBase = ""; ideaDraftCurrent = ""; ideaChoiceSchema = [];
   ideaChoicesApplied = false; ideaDraftPreviewData = null; ideaChoiceRevision++;
+  ideaDiscussionData = null; ideaSelectedProposal = "";
+  $("#ideaDiscussion").hidden = true; $("#ideaDiscussion").innerHTML = "";
   $("#ideaConfirmCheck").checked = false;
   $("#ideaConfirmCheck").disabled = true;
   $("#ideaRunBtn").disabled = true;
@@ -1818,6 +1899,11 @@ function restoreEntry(entry) {
     $("#ideaQuestions").hidden = false;
     $("#ideaQuestions").innerHTML = "<b>已恢复这个项目上次的规格草稿</b><div>可以继续用选项补信息，确认后直接进入任务分解。</div>";
     $("#ideaConfirmCheck").disabled = false;
+    if (e.discussion && typeof e.discussion === "object") {
+      ideaDiscussionData = e.discussion;
+      ideaSelectedProposal = typeof e.selected_proposal === "string" ? e.selected_proposal : "";
+      renderDiscussion(ideaDiscussionData, ideaSelectedProposal);
+    }
     $("#ideaDraftStatus").textContent = "已恢复「" + (state.project ? state.project.name : "当前项目") + "」的草稿。";
   } else {
     $("#ideaDraftStatus").textContent = "先写一句想法；之后通过选项补充，规格摘要会自动更新。";

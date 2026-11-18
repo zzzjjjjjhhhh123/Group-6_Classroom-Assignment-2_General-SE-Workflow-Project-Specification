@@ -59,15 +59,19 @@ _PIPELINE = Pipeline(
 )
 
 
-def build_draft(idea: str, details: str = "") -> dict:
-    """想法 → 规格草稿：模型优先（任意领域都能进），失败退回快速模板并说明原因。"""
+def build_draft(idea: str, details: str = "", proposal: str = "") -> dict:
+    """想法 → 多体讨论 + 建设方案 + 多方评价 + 规格草稿。
+
+    proposal 非空表示用户已选定方案，规格对齐该方案重新生成。
+    模型优先（任意领域都能进），失败退回快速模板并说明原因。
+    """
     cfg = _LLM_CFG
     if cfg.available:
         # 入口要"敢等"一点，但别把浏览器拖死：单独给 45s 上限
         quick = LLMConfig(api_key=cfg.api_key, base_url=cfg.base_url, model=cfg.model, timeout=45, enabled=cfg.enabled)
         started = time.time()
         try:
-            draft = draft_from_idea_llm(idea, details, quick)
+            draft = draft_from_idea_llm(idea, details, quick, proposal=proposal)
             draft["elapsed"] = round(time.time() - started, 1)
             return draft
         except ValueError:
@@ -301,8 +305,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/draft-spec":
                 idea = str(body.get("idea") or "")
                 details = str(body.get("details") or "")
+                proposal = str(body.get("proposal") or "")
                 try:
-                    draft = build_draft(idea, details)
+                    draft = build_draft(idea, details, proposal=proposal)
                     draft["preview"] = parse_spec(draft["draft_markdown"]).to_dict()
                     return self._json(draft)
                 except ValueError as exc:
