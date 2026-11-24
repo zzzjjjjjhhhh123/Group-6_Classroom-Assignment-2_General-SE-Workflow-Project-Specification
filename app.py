@@ -59,31 +59,93 @@ _PIPELINE = Pipeline(
 )
 
 
-def build_draft(idea: str, details: str = "", proposal: str = "") -> dict:
+def _new_trace(stage: str) -> dict:
+    """开一条调用链路：trace_id 贯穿本次"想法→讨论→规格"或"分解→编排"。"""
+    return {
+        "trace_id": uuid.uuid4().hex[:12],
+        "stage": stage,
+        "started_at": _now(),
+        "llm_calls": [],
+        "ok": True,
+    }
+
+
+def _finish_trace(trace: dict, started: float) -> dict:
+    trace["duration_ms"] = int((time.time() - started) * 1000)
+    trace["finished_at"] = _now()
+    return trace
+
+
+def _record_llm_call(trace: dict, name: str, model: str, t0: float, ok: bool, error: str = "") -> None:
+    trace["llm_calls"].append(
+        {
+            "name": name,
+            "model": model,
+            "duration_ms": int((time.time() - t0) * 1000),
+            "ok": ok,
+            **({"error": str(error)[:200]} if error else {}),
+        }
+    )
+    if not ok:
+        trace["ok"] = False
+
+
+def _persist_trace(project_id, trace: dict, extra: dict = None) -> None:
+    """把链路写进项目快照（留最近 20 条）；写不进去也不影响主流程。"""
+    if not project_id:
+        return
+    try:
+        pid = _project_id(project_id)
+        project = _read_project(pid)
+        entry = dict(trace)
+        if extra:
+            entry.update(extra)
+        entry["created_at"] = _now()
+        traces = project.setdefault("traces", [])
+        traces.append(entry)
+        project["traces"] = traces[-20:]
+        project["updated_at"] = _now()
+        _save_project(project)
+    except Exception:
+        pass
+
+
+def build_draft(idea: str, details: str = "", proposal: str = "", project_id=None) -> dict:
     """想法 → 多体讨论 + 建设方案 + 多方评价 + 规格草稿。
 
     proposal 非空表示用户已选定方案，规格对齐该方案重新生成。
     模型优先（任意领域都能进），失败退回快速模板并说明原因。
+    全程记录 trace（链路编号 + 每次模型调用的耗时/成败），随项目快照持久化。
     """
+    trace = _new_trace("idea_to_spec")
+    started = time.time()
     cfg = _LLM_CFG
     if cfg.available:
         # 入口要"敢等"一点，但别把浏览器拖死：单独给 45s 上限
         quick = LLMConfig(api_key=cfg.api_key, base_url=cfg.base_url, model=cfg.model, timeout=45, enabled=cfg.enabled)
-        started = time.time()
+        t0 = time.time()
         try:
             draft = draft_from_idea_llm(idea, details, quick, proposal=proposal)
-            draft["elapsed"] = round(time.time() - started, 1)
-            return draft
+            draft["elapsed"] = round(time.time() - t0, 1)
+            _record_llm_call(trace, "讨论与规格生成", cfg.model, t0, True)
         except ValueError:
             raise
         except Exception as exc:  # 模型层任何异常都不该让入口 500：一律退回模板
+            _record_llm_call(trace, "讨论与规格生成", cfg.model, t0, False, exc)
+            t1 = time.time()
             draft = draft_from_idea(idea, details)
             draft["mode"] = "快速模板（模型降级）"
             draft["warning"] = f"模型生成失败，已退回快速模板：{exc}"
-            return draft
-    draft = draft_from_idea(idea, details)
-    if not draft.get("warning"):
-        draft["warning"] = "未配置模型，当前为快速模板：只做结构引导，不替你编造功能。"
+            _record_llm_call(trace, "模板兜底", "rule-template", t1, True)
+    else:
+        t0 = time.time()
+        draft = draft_from_idea(idea, details)
+        if not draft.get("warning"):
+            draft["warning"] = "未配置模型，当前为快速模板：只做结构引导，不替你编造功能。"
+        _record_llm_call(trace, "模板兜底", "rule-template", t0, True)
+    _finish_trace(trace, started)
+    draft["trace"] = trace
+    _persist_trace(project_id, trace, {"idea": (idea or "")[:80], "mode": draft.get("mode")})
     return draft
 
 
@@ -272,7 +334,12 @@ class Handler(BaseHTTPRequestHandler):
                     messages.append({"role": "system", "content": "以下是用户本次明确选作上下文的文件内容：\n" + "\n\n".join(context)})
                 messages.extend({"role": m["role"], "content": m["content"]} for m in history if m.get("role") in ("user", "assistant"))
                 messages.append({"role": "user", "content": message})
+                chat_trace = _new_trace("project_chat")
+                t_chat = time.time()
                 answer = DeepSeekClient(_LLM_CFG).chat(messages)
+                _record_llm_call(chat_trace, "项目问答", _LLM_CFG.model, t_chat, True)
+                _finish_trace(chat_trace, t_chat)
+                _persist_trace(pid, chat_trace, {"chars": len(answer)})
                 now = _now()
                 project.setdefault("messages", []).extend([
                     {"role": "user", "content": message, "created_at": now, "context_files": sorted(wanted)},
@@ -298,8 +365,15 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json({"ok": False, "error": "规格还缺少必要内容：" + questions, "questions": blocking}, 400)
                 dcfg = _decompose_cfg(body.get("decompose") or {})
                 ocfg = _orchestrate_cfg(body.get("orchestrate") or {})
+                trace = _new_trace("decompose_orchestrate")
+                started = time.time()
                 with _LOCK:
                     result = _PIPELINE.run(text, dcfg, ocfg)
+                _finish_trace(trace, started)
+                trace["tasks"] = len(result.get("tasks") or [])
+                trace["strategy"] = ocfg.strategy
+                result["trace"] = trace
+                _persist_trace(body.get("project_id"), trace, {"strategy": ocfg.strategy})
                 return self._json(result)
 
             if path == "/api/draft-spec":
@@ -307,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
                 details = str(body.get("details") or "")
                 proposal = str(body.get("proposal") or "")
                 try:
-                    draft = build_draft(idea, details, proposal=proposal)
+                    draft = build_draft(idea, details, proposal=proposal, project_id=body.get("project_id"))
                     draft["preview"] = parse_spec(draft["draft_markdown"]).to_dict()
                     return self._json(draft)
                 except ValueError as exc:

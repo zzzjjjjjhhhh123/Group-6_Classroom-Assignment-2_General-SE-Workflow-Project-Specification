@@ -367,6 +367,11 @@
   .idea-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
   .idea-draft{margin-top:16px;padding-top:14px;border-top:1px solid #e7ebf2}
   .disc-sec{margin:10px 0;padding:11px 13px;border:1px solid #e2e7f0;border-radius:10px;background:#fbfcfe}
+  .trace-bar{display:none;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;padding:8px 12px;border:1px dashed #b9c6dd;border-radius:10px;background:#f6f9ff;color:#4a5780;font-size:10.5px}
+  .trace-bar.on{display:flex}
+  .trace-bar b{color:#2b3f66}
+  .trace-bar .tt{background:#e8f0fd;border-radius:6px;padding:2px 7px;white-space:nowrap}
+  .trace-bar .tt.bad{background:#fdecec;color:#a33d3d}
   .disc-sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
   .disc-sec-title{color:#34415b;font-size:11px;font-weight:700}
   .disc-sec-note{color:#8d93a0;font-size:10px}
@@ -809,6 +814,7 @@
       </div>
       <div class="workflow-config-action"><span class="hint" id="strategyHint"></span><button class="primary" id="rePlanBtn" disabled>按当前策略重新编排</button></div>
     </div>
+    <div class="trace-bar" id="traceBar"></div>
     <div class="tabs">
       <div class="tab on" data-pane="spec">规格解析 <span class="n" id="nSpec"></span></div>
       <div class="tab" data-pane="tasks">任务分解 <span class="n" id="nTask"></span></div>
@@ -1033,10 +1039,13 @@ async function run(requireCompleteSpec = false) {
       orchestrate: readOrchestrate(),
     };
     if (requireCompleteSpec) payload.require_complete_spec = true;
+    if (state.project) payload.project_id = state.project.id;
     logEvent("info", "input", "提交", "规格已提交，等待解析");
     const data = await api("/api/run", payload);
     if (!data.ok) { logEvent("error", "run", "失败", data.error || "未知错误"); setBusy(false); return; }
     applyResult(data);
+    lastRunTrace = data.trace || null;
+    renderTraceBar();
     pushHistory(data);
     saveWorkflow();
   } catch (e) {
@@ -1121,6 +1130,8 @@ async function makeIdeaDraft(proposal) {
     ideaChoicesApplied = false;
     ideaChoiceRevision++;
     ideaDraftPreviewData = data.preview || null;
+    lastTrace = data.trace || null;
+    if (lastTrace) renderTraceBar();
     // 切换方案时保留决策记录，但只保留本次生成里仍存在的方案（方案名可能变）
     const newNames = new Set((data.proposals || []).map(p => p.name));
     const keptDecisions = ideaDiscussionData && Array.isArray(ideaDiscussionData.decisions)
@@ -1154,6 +1165,28 @@ async function makeIdeaDraft(proposal) {
     $("#makeDraftBtn").disabled = false;
   }
 }
+
+function renderTraceBar() {
+  const bar = $("#traceBar");
+  if (!bar) return;
+  const t = lastRunTrace || lastTrace;
+  if (!t) { bar.className = "trace-bar"; bar.innerHTML = ""; return; }
+  const fmt = ms => ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : (ms || 0) + "ms";
+  const calls = Array.isArray(t.llm_calls) ? t.llm_calls : [];
+  const total = calls.reduce((s, c) => s + (c.duration_ms || 0), 0);
+  const failed = calls.filter(c => c.ok === false).length;
+  const stageName = {idea_to_spec: "想法→讨论→规格", decompose_orchestrate: "分解·编排", project_chat: "项目问答"}[t.stage] || t.stage || "";
+  const parts = ["<b>链路追踪</b>", "<span class=\"tt\">#" + esc(t.trace_id || "") + "</span>"];
+  if (stageName) parts.push("<span class=\"tt\">" + esc(stageName) + "</span>");
+  if (calls.length) parts.push("<span class=\"tt\">模型调用 " + calls.length + " 次 · 合计 " + fmt(total) + (failed ? " · 失败 " + failed : "") + "</span>");
+  calls.forEach(c => parts.push("<span class=\"tt" + (c.ok === false ? " bad" : "") + "\">" + esc(c.name) + " " + fmt(c.duration_ms) + (c.ok === false ? "（已降级）" : "") + "</span>"));
+  if (t.duration_ms) parts.push("<span class=\"tt\">总耗时 " + fmt(t.duration_ms) + "</span>");
+  if (t.tasks) parts.push("<span class=\"tt\">" + t.tasks + " 条任务</span>");
+  bar.innerHTML = parts.join("");
+  bar.className = "trace-bar on";
+}
+
+let lastTrace = null, lastRunTrace = null;
 
 function renderRisk(risk) {
   if (!risk) return "";
@@ -1986,6 +2019,8 @@ function collectEntry() {
     choices_applied: !!ideaChoicesApplied,
     discussion: ideaDiscussionData || null,
     selected_proposal: ideaSelectedProposal || "",
+    last_trace: lastTrace || null,
+    last_run_trace: lastRunTrace || null,
     saved_at: new Date().toISOString(),
   };
 }
@@ -2043,7 +2078,13 @@ function restoreEntry(entry) {
       renderDiscussion(ideaDiscussionData, ideaSelectedProposal);
     }
     $("#ideaDraftStatus").textContent = "已恢复「" + (state.project ? state.project.name : "当前项目") + "」的草稿。";
+    lastTrace = e.last_trace || null;
+    lastRunTrace = e.last_run_trace || null;
+    renderTraceBar();
   } else {
+    lastTrace = null;
+    lastRunTrace = null;
+    renderTraceBar();
     $("#ideaDraftStatus").textContent = "先写一句想法；之后通过选项补充，规格摘要会自动更新。";
   }
   restoringEntry = false;
