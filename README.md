@@ -81,6 +81,7 @@ JSON 对象支持 `product`、`goal`、`modules`（模块含 `name` 和 `require
 6. **重复提示范围**：当前只提示同模块下标题完全相同的任务，不做语义去重，也不自动合并任务。
 7. **需求影响可追踪**：选中一条需求后，沿 `source_refs` 找出直接关联任务，再沿 `depends_on` 递归查找下游任务；页面汇总受影响任务数、估算工作量、关键路径数量和所在批次，并同步高亮任务表与 DAG。该分析依据现有任务和依赖关系，不会自行编造需求变更后的新任务。
 8. **建议不等于确认**：想法入口的讨论、方案、评价全部是「建议」，只有用户点选方案并勾选确认后，内容才写入 DesignSpec；暂缓/不采纳会连同理由记入决策记录，可导出留档。风险一律带严重程度、触发条件和是否需人裁决，缺级别的不会被自动补一个。
+9. **链路可观测**：每次“想法→讨论→规格”或“分解→编排”都会生成 12 位 `trace_id`，逐次记录模型调用的名称/耗时/成败（失败降级也留痕），随项目快照持久化（最近 20 条），界面配置栏下方的链路追踪条实时展示；这就是多智能体工作流“可观测性”的落地：看得见、查得清、算得出。
 
 ## 可配置项
 
@@ -110,7 +111,7 @@ se-workflow/
 ├─ llm.py            DeepSeek 客户端（urllib，无第三方依赖）
 ├─ web/index.html    单页可视化（原生 JS，自绘 SVG 依赖图）
 ├─ examples/         两份不同产品的样例设计规格
-└─ tests/            27 条自测（python -m unittest discover -s tests -v）
+└─ tests/            30 条自测（python -m unittest discover -s tests -v）
 ```
 
 ## 接口
@@ -119,10 +120,10 @@ se-workflow/
 |---|---|---|
 | GET | `/api/config` | 策略、粒度预设、LLM 是否可用 |
 | GET | `/api/examples` `/api/example?file=` | 样例规格列表 / 原文 |
-| POST | `/api/run` | `{spec_text, decompose, orchestrate}` → spec + tasks + plan + coverage + events |
+| POST | `/api/run` | `{spec_text, decompose, orchestrate, project_id?}` → spec + tasks + plan + coverage + events + trace |
 | POST | `/api/reorchestrate` | `{spec, tasks, orchestrate}` → 新计划 + 版本差异（人工审核后重排） |
 | POST | `/api/simulate` | `{tasks, plan}` → 演练推进的状态事件 |
-| GET | `/api/projects` `/api/project?id=` | 项目列表 / 项目资料与聊天历史 |
+| GET | `/api/projects` `/api/project?id=` | 项目列表 / 项目资料、聊天历史与链路追踪（`traces`） |
 | GET | `/api/project/file?id=&name=` | 读取项目中的单个文本文件 |
 | POST | `/api/projects` | `{name}` → 创建本地项目 |
 | POST | `/api/project/files` | `{project_id, name, content}` → 保存文本文件 |
