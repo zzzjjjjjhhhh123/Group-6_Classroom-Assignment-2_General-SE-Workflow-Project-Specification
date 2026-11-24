@@ -126,6 +126,8 @@ class PMAgent:
         _drop_unknown_deps(tasks)
         normalize_task_status(tasks, spec)
         tasks = _apply_role_pool(tasks, self.cfg)
+        if self.cfg.auto_review_task:
+            tasks = self._append_review_tasks(tasks)
         return tasks, meta
 
     # ------------------------------------------------------------ 规则路径
@@ -268,6 +270,46 @@ class PMAgent:
         return _drafts_to_tasks(drafts, spec)
 
     # ------------------------------------------------------------ LLM 路径
+
+    def _append_review_tasks(self, tasks: List[Task]) -> List[Task]:
+        """编码→测试→评审闭环：为每个已有联调测试的模块追加实现评审任务。
+
+        在角色池应用之后统一追加，规则路径与 LLM 路径都生效；
+        评审任务继承测试任务的规格出处，依赖指向同模块测试任务。
+        """
+        modules_with_review = {t.module for t in tasks if t.kind == "review"}
+        tests = [t for t in tasks if t.kind == "test" and t.module not in modules_with_review]
+        if not tests:
+            return tasks
+        out = list(tasks)
+        seen_ids = {t.task_id for t in out}
+        seq = len(out)
+        for t in tests:
+            seq += 1
+            tid = f"T-{seq:02d}"
+            while tid in seen_ids:
+                seq += 1
+                tid = f"T-{seq:02d}"
+            seen_ids.add(tid)
+            out.append(
+                Task(
+                    task_id=tid,
+                    title=f"{t.module}·实现评审",
+                    description=f"组织「{t.module}」的实现评审：走查联调验证记录，核对验收标准逐条通过，输出评审结论与问题清单。",
+                    module=t.module,
+                    kind="review",
+                    deliverable="评审结论（通过/有条件通过/不通过）+ 问题清单",
+                    acceptance_criteria=["评审结论明确且可追溯", "问题清单逐条带责任人与处理方式"],
+                    depends_on=[t.task_id],
+                    suggested_role="pm",
+                    estimate_days=self.cfg.clamp(0.5),
+                    priority="P1",
+                    source_refs=list(t.source_refs),
+                    origin="rule",
+                )
+            )
+        self.emit("decompose", "info", f"评审闭环：追加 {len(tests)} 条实现评审任务（依赖同模块联调测试）")
+        return out
 
     def _llm_tasks(self, spec: DesignSpec) -> List[Task]:
         payload = self._spec_payload(spec)

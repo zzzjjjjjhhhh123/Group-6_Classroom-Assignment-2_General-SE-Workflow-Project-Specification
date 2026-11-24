@@ -184,6 +184,56 @@ class Pipeline:
             "events": _ev(log),
         }
 
+    def dynamic_replan(self, payload: Dict[str, Any], ocfg: OrchestrateConfig) -> Dict[str, Any]:
+        """编排动态化：执行中注入失败后自动重排。
+
+        failed_task_ids：演练/执行中失败的任务 → 重新纳入排期（返工）；
+        done_task_ids：已完成任务 → 保留 done，不再排期；
+        其余未完成任务按当前策略自动重新分批，并给出与旧计划的差异。
+        """
+        log = EventLog(self.sink)
+        spec = _spec_from_dict(payload.get("spec") or {})
+        tasks = _tasks_from_payload(payload.get("tasks") or [], spec)
+        if not tasks:
+            return {"ok": False, "error": "没有可编排的任务", "events": _ev(log)}
+        known = {t.task_id for t in tasks}
+        failed = [tid for tid in (payload.get("failed_task_ids") or []) if tid in known]
+        done_ids = {tid for tid in (payload.get("done_task_ids") or []) if tid in known} - set(failed)
+
+        for t in tasks:
+            if t.task_id in done_ids:
+                t.status = "done"
+            elif t.task_id in set(failed):
+                t.status = "ready"
+                t.pending_reason = ""
+                log.push("run", "error", f"{t.task_id} {t.title} 执行失败，自动纳入返工并重排其下游")
+
+        log.push(
+            "replan",
+            "warn" if failed else "info",
+            f"动态重排触发：{len(failed)} 条失败返工、{len(done_ids)} 条已完成（不再排期），其余任务按策略「{ocfg.strategy}」自动重新编排",
+        )
+        self.plan_seq += 1
+        new_plan = orchestrate(tasks, spec, ocfg, self.plan_seq)
+        for err in new_plan.errors:
+            log.push("orchestrate", "warn", "契约校验：" + err)
+        log.push("orchestrate", "info", f"动态新计划 {new_plan.plan_id}：{len(new_plan.batches)} 个批次")
+
+        old_raw = payload.get("plan")
+        diff: List[str] = []
+        if isinstance(old_raw, dict) and old_raw.get("batches"):
+            old = _PlanShim(old_raw)
+            diff = diff_plans(old, new_plan)
+            log.push("diff", "info", f"与失败前计划差异 {len(diff)} 条")
+        return {
+            "ok": True,
+            "spec": spec.to_dict(),
+            "tasks": [t.to_dict() for t in tasks],
+            "plan": new_plan.to_dict(),
+            "plan_diff": diff,
+            "events": _ev(log),
+        }
+
     def _client(self):
         if not self.llm_cfg.available:
             return None
@@ -196,6 +246,31 @@ class Pipeline:
 
 
 # ---------------------------------------------------------------- 差异
+
+
+class _PlanShim:
+    """把前端传回的旧计划 dict 包成 diff_plans 需要的形状。"""
+
+    def __init__(self, raw: Dict[str, Any]):
+        self.strategy = raw.get("strategy", "")
+        self.batches = [
+            _BatchShim(b) for b in (raw.get("batches") or []) if isinstance(b, dict)
+        ]
+        self.blocked = [_BlockedShim(b) for b in (raw.get("blocked") or []) if isinstance(b, dict)]
+
+
+class _BatchShim:
+    def __init__(self, raw: Dict[str, Any]):
+        self.batch_index = raw.get("batch_index", 0)
+        self.task_ids = raw.get("task_ids") or []
+
+
+class _BlockedShim:
+    def __init__(self, raw: Any):
+        if isinstance(raw, dict):
+            self.task_id = raw.get("task_id", "")
+        else:
+            self.task_id = str(raw)
 
 
 def diff_plans(old, new) -> List[str]:
@@ -311,11 +386,13 @@ def _tasks_from_payload(items: List[Dict[str, Any]], spec: DesignSpec) -> List[T
     return tasks
 
 
-def simulate(tasks: List[Dict[str, Any]], plan: Dict[str, Any]) -> Dict[str, Any]:
+def simulate(tasks: List[Dict[str, Any]], plan: Dict[str, Any], fail_task_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """演练推进：按批次顺序产出状态事件，供界面演示"运行中"的追踪视图。
 
-    这是演示用的推演，不谎称真实执行了代码。
+    fail_task_ids 用于注入失败：被点名的任务产出 fail 事件而不是 done，
+    供动态重排演示（这是演示用的推演，不谎称真实执行了代码）。
     """
+    fails = {tid for tid in (fail_task_ids or []) if tid}
     by_id = {t["task_id"]: t for t in tasks}
     events = []
     seq = 0
@@ -336,16 +413,28 @@ def simulate(tasks: List[Dict[str, Any]], plan: Dict[str, Any]) -> Dict[str, Any
                 }
             )
             seq += 1
-            events.append(
-                {
-                    "seq": seq,
-                    "phase": "run",
-                    "event_type": "done",
-                    "task_id": tid,
-                    "message": f"{tid} 完成，交付物：{t.get('deliverable', '')}",
-                    "ts": "",
-                }
-            )
+            if tid in fails:
+                events.append(
+                    {
+                        "seq": seq,
+                        "phase": "run",
+                        "event_type": "fail",
+                        "task_id": tid,
+                        "message": f"{tid} 执行失败（演示注入）：交付物未通过验收，需返工并触发动态重排",
+                        "ts": "",
+                    }
+                )
+            else:
+                events.append(
+                    {
+                        "seq": seq,
+                        "phase": "run",
+                        "event_type": "done",
+                        "task_id": tid,
+                        "message": f"{tid} 完成，交付物：{t.get('deliverable', '')}",
+                        "ts": "",
+                    }
+                )
     return {"ok": True, "events": events}
 
 

@@ -92,6 +92,10 @@ def orchestrate(
         t.status = "ready" if t.status != "done" else t.status
         t.pending_reason = ""
 
+    # 已完成任务不再排期：从批次子图剔除，但其依赖被视为已满足
+    done_count = sum(1 for t in runnable if t.status == "done")
+    remaining = [t for t in runnable if t.status != "done"]
+
     plan = ExecutionPlan(
         plan_id=f"PLAN-{plan_seq:02d}",
         spec_version=spec.version,
@@ -102,14 +106,18 @@ def orchestrate(
     plan.valid = not errors
     plan.errors = errors
 
-    if not runnable:
-        rationale.append("没有可执行任务：全部任务处于待确认或被循环依赖阻塞状态。")
+    if not remaining:
+        rationale.append(
+            f"没有待执行任务：{len(runnable)} 条中 {done_count} 条已完成"
+            if done_count
+            else "没有可执行任务：全部任务处于待确认或被循环依赖阻塞状态。"
+        )
         plan.rationale = rationale
         plan.stats = _stats([], graph, blocked, tasks)
         return plan
 
-    # ---- 2. 在可执行子图上重算层级、关键路径与时差 ----
-    sub = _induced(runnable)
+    # ---- 2. 在待执行子图上重算层级、关键路径与时差 ----
+    sub = _induced(remaining)
     sub_graph = TaskGraph(sub)
     leftover = sub_graph.find_cycle()
     if leftover:
@@ -143,7 +151,7 @@ def orchestrate(
 
     # ---- 4. 生成依据 ----
     strat = STRATEGIES.get(cfg.strategy, {})
-    rationale.insert(0, f"可执行任务 {len(runnable)} 条，依赖边 {sub_graph.summary()['edge_count']} 条，拓扑分 {max(levels.values()) if levels else 0} 层")
+    rationale.insert(0, f"待执行任务 {len(remaining)} 条" + (f"（另 {done_count} 条已完成，不再排期）" if done_count else "") + f"，依赖边 {sub_graph.summary()['edge_count']} 条，拓扑分 {max(levels.values()) if levels else 0} 层")
     rationale.append(f"策略「{strat.get('label', cfg.strategy)}」：{strat.get('desc', '')}；并行上限 {cfg.max_parallel}，单角色并行上限 {cfg.per_role_wip_limit or '不限'}")
     if crit_path:
         rationale.append(f"关键路径 {' → '.join(crit_path)}，累计 {crit_days} 人日，是当前工期的理论下界")

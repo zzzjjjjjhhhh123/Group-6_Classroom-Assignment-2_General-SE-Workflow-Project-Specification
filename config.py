@@ -77,6 +77,8 @@ class DecomposeConfig:
     # 非功能需求是否单独出任务（性能、安全、可观测性）
     split_non_functional: bool = True
     auto_test_task: bool = True
+    # 评审任务：编码→测试→评审闭环。默认关，打开后每模块在测试后追加评审任务
+    auto_review_task: bool = False
 
     def preset(self) -> Dict[str, Any]:
         return GRANULARITY_PRESETS.get(self.granularity, GRANULARITY_PRESETS["medium"])
