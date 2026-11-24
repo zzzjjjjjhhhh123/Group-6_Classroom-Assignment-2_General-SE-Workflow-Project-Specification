@@ -82,6 +82,9 @@ JSON 对象支持 `product`、`goal`、`modules`（模块含 `name` 和 `require
 7. **需求影响可追踪**：选中一条需求后，沿 `source_refs` 找出直接关联任务，再沿 `depends_on` 递归查找下游任务；页面汇总受影响任务数、估算工作量、关键路径数量和所在批次，并同步高亮任务表与 DAG。该分析依据现有任务和依赖关系，不会自行编造需求变更后的新任务。
 8. **建议不等于确认**：想法入口的讨论、方案、评价全部是「建议」，只有用户点选方案并勾选确认后，内容才写入 DesignSpec；暂缓/不采纳会连同理由记入决策记录，可导出留档。风险一律带严重程度、触发条件和是否需人裁决，缺级别的不会被自动补一个。
 9. **链路可观测**：每次“想法→讨论→规格”或“分解→编排”都会生成 12 位 `trace_id`，逐次记录模型调用的名称/耗时/成败（失败降级也留痕），随项目快照持久化（最近 20 条），界面配置栏下方的链路追踪条实时展示；这就是多智能体工作流“可观测性”的落地：看得见、查得清、算得出。
+10. **讨论会收敛（chatmanager 式）**：第二轮每个角色必须点名回应其他角色的观点（支持/反驳/补充，反驳需给理由与替代建议），主持人汇总出共识点、保留分歧（含各方立场与收敛方式）并给出推荐方案；建议可一键采纳进决策记录。模型收敛为主路径，评价记录投票归纳为规则兑底，收敛方式会在界面上标明。
+11. **实现阶段闭环**：可开关“评审任务”（默认关，保持已演练的批次数字稳定）；打开后每个模块在联调测试后自动追加评审任务，编排图呈现编码→测试→评审的分层闭环，评审交付物为评审结论 + 问题清单。
+12. **编排动态化**：演练推进可一键“注入失败→动态重排”：失败任务自动纳入返工并重排其下游，已完成任务不再排期，系统按当前策略重新分批并逐条列出与失败前计划的差异——这就是“执行中出问题→计划自动演化”的动态闭环。
 
 ## 可配置项
 
@@ -90,6 +93,7 @@ JSON 对象支持 `product`、`goal`、`modules`（模块含 `name` 和 `require
 | 分解粒度 | `granularity` | 粗 / 中 / 细 | 粗=按模块合并（任务少、颗粒大），中=按需求，细=需求×层 |
 | 分解规则 | `split_non_functional` | 开/关 | 非功能需求是否单独出工程化任务 |
 | 分解规则 | `auto_test_task` | 开/关 | 是否每模块生成联调用例任务 |
+| 分解规则 | `auto_review_task` | 开/关 | 是否每模块追加评审任务（编码→测试→评审闭环；默认关） |
 | 分解规则 | `role_pool` | 角色列表 | 任务只派给团队里真实存在的角色 |
 | 估算范围 | `min_estimate_days` / `max_estimate_days` | 0.5–2 人日 | 单任务估算边界；界面编辑也遵循此范围 |
 | 编排 | `strategy` | 依赖优先 / 并行最大化 / 角色批量 / 关键路径优先 | 决定批次划分方式 |
@@ -111,7 +115,7 @@ se-workflow/
 ├─ llm.py            DeepSeek 客户端（urllib，无第三方依赖）
 ├─ web/index.html    单页可视化（原生 JS，自绘 SVG 依赖图）
 ├─ examples/         两份不同产品的样例设计规格
-└─ tests/            30 条自测（python -m unittest discover -s tests -v）
+└─ tests/            39 条自测（python -m unittest discover -s tests -v）
 ```
 
 ## 接口
@@ -122,7 +126,8 @@ se-workflow/
 | GET | `/api/examples` `/api/example?file=` | 样例规格列表 / 原文 |
 | POST | `/api/run` | `{spec_text, decompose, orchestrate, project_id?}` → spec + tasks + plan + coverage + events + trace |
 | POST | `/api/reorchestrate` | `{spec, tasks, orchestrate}` → 新计划 + 版本差异（人工审核后重排） |
-| POST | `/api/simulate` | `{tasks, plan}` → 演练推进的状态事件 |
+| POST | `/api/simulate` | `{tasks, plan, fail_task_ids?}` → 演练推进的状态事件（可注入失败） |
+| POST | `/api/replan` | `{spec, tasks, plan, failed_task_ids, done_task_ids, orchestrate}` → 动态重排：失败返工、已完成不排期 + 计划差异 |
 | GET | `/api/projects` `/api/project?id=` | 项目列表 / 项目资料、聊天历史与链路追踪（`traces`） |
 | GET | `/api/project/file?id=&name=` | 读取项目中的单个文本文件 |
 | POST | `/api/projects` | `{name}` → 创建本地项目 |

@@ -38,7 +38,13 @@ from config import (
     load_llm_config,
 )
 from pipeline import Pipeline, simulate
-from idea_to_spec import apply_choice_selections, draft_from_idea, draft_from_idea_llm
+from idea_to_spec import (
+    apply_choice_selections,
+    converge_discussion_llm,
+    convergence_template,
+    draft_from_idea,
+    draft_from_idea_llm,
+)
 from llm import LLMError
 from spec_parser import parse_spec
 
@@ -143,6 +149,35 @@ def build_draft(idea: str, details: str = "", proposal: str = "", project_id=Non
         if not draft.get("warning"):
             draft["warning"] = "未配置模型，当前为快速模板：只做结构引导，不替你编造功能。"
         _record_llm_call(trace, "模板兜底", "rule-template", t0, True)
+
+    # 第二轮收敛（chatmanager 式）：互相回应 → 共识决策。LLM 主路径 + 规则兜底。
+    if draft.get("discussion"):
+        t_conv = time.time()
+        conv = None
+        if cfg.available and draft.get("source") == "llm":
+            quick_conv = LLMConfig(api_key=cfg.api_key, base_url=cfg.base_url, model=cfg.model, timeout=45, enabled=cfg.enabled)
+            try:
+                conv = converge_discussion_llm(
+                    idea,
+                    draft["discussion"],
+                    draft.get("proposals") or [],
+                    draft.get("evaluations") or [],
+                    draft.get("open_questions") or [],
+                    quick_conv,
+                )
+                _record_llm_call(trace, "第二轮收敛", cfg.model, t_conv, True)
+            except ValueError:
+                raise
+            except Exception as exc:
+                _record_llm_call(trace, "第二轮收敛", cfg.model, t_conv, False, exc)
+                conv = None
+        if conv is None:
+            conv = convergence_template(draft)
+            _record_llm_call(trace, "规则收敛", "rule-template", t_conv, True)
+        draft["rebuttals"] = conv["rebuttals"]
+        draft["consensus"] = conv["consensus"]
+        draft["converge_mode"] = conv["converge_mode"]
+
     _finish_trace(trace, started)
     draft["trace"] = trace
     _persist_trace(project_id, trace, {"idea": (idea or "")[:80], "mode": draft.get("mode")})
@@ -410,7 +445,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(result)
 
             if path == "/api/simulate":
-                return self._json(simulate(body.get("tasks") or [], body.get("plan") or {}))
+                return self._json(simulate(body.get("tasks") or [], body.get("plan") or {}, body.get("fail_task_ids") or []))
+
+            if path == "/api/replan":
+                ocfg = _orchestrate_cfg(body.get("orchestrate") or {})
+                with _LOCK:
+                    result = _PIPELINE.dynamic_replan(body, ocfg)
+                return self._json(result)
 
             if path == "/api/project/workflow":
                 pid = _project_id(body.get("project_id"))
@@ -501,7 +542,7 @@ def _list_projects() -> list:
 
 def _decompose_cfg(d: dict) -> DecomposeConfig:
     cfg = DecomposeConfig()
-    for key in ("granularity", "role_pool", "max_estimate_days", "min_estimate_days", "require_source_refs", "split_non_functional", "auto_test_task"):
+    for key in ("granularity", "role_pool", "max_estimate_days", "min_estimate_days", "require_source_refs", "split_non_functional", "auto_test_task", "auto_review_task"):
         if key in d:
             setattr(cfg, key, d[key])
     if cfg.granularity not in GRANULARITY_PRESETS:

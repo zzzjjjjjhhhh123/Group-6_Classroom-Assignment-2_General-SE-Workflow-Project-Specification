@@ -41,6 +41,7 @@ KIND_LABEL = {
     "frontend": "前端",
     "data": "数据",
     "test": "测试",
+    "review": "评审",
     "ops": "基础设施",
     "doc": "文档",
 }

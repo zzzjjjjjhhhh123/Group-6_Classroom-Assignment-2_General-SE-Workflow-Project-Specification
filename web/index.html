@@ -367,6 +367,11 @@
   .idea-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
   .idea-draft{margin-top:16px;padding-top:14px;border-top:1px solid #e7ebf2}
   .disc-sec{margin:10px 0;padding:11px 13px;border:1px solid #e2e7f0;border-radius:10px;background:#fbfcfe}
+  .eval-verdict.supp2{background:#eef7ff;color:#1d6fb8}
+  .dv-row{margin:6px 0;padding:7px 9px;border:1px solid #ecdfc8;border-radius:8px;background:#fffdf5;font-size:11px}
+  .dv-side{display:inline-block;margin:4px 8px 0 0;padding:2px 7px;background:#f4f0e4;border-radius:6px;color:#6b5d3f}
+  .dv-res{display:block;margin-top:4px;color:#8a6d1a}
+  .cons-sug{margin-top:8px;padding:8px 10px;border:1px solid #b8d8be;border-radius:8px;background:#f0f8f1;color:#27500a;font-size:11.5px}
   .trace-bar{display:none;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;padding:8px 12px;border:1px dashed #b9c6dd;border-radius:10px;background:#f6f9ff;color:#4a5780;font-size:10.5px}
   .trace-bar.on{display:flex}
   .trace-bar b{color:#2b3f66}
@@ -811,6 +816,7 @@
         <div class="workflow-config-field"><label for="strategy">编排策略</label><select id="strategy"></select></div>
         <div class="workflow-config-field"><label for="maxParallel">并行上限</label><input type="number" id="maxParallel" value="3" min="1" max="8"></div>
         <div class="workflow-config-field"><label for="wipLimit">单角色上限</label><input type="number" id="wipLimit" value="2" min="0" max="8"></div>
+        <div class="workflow-config-field"><label for="autoReview">评审任务</label><select id="autoReview"><option value="off" selected>关</option><option value="on">开（编码→测试→评审）</option></select></div>
       </div>
       <div class="workflow-config-action"><span class="hint" id="strategyHint"></span><button class="primary" id="rePlanBtn" disabled>按当前策略重新编排</button></div>
     </div>
@@ -1035,7 +1041,7 @@ async function run(requireCompleteSpec = false) {
   try {
     const payload = {
       spec_text: text,
-      decompose: { granularity: $("#granularity").value },
+      decompose: { granularity: $("#granularity").value, auto_review_task: $("#autoReview").value === "on" },
       orchestrate: readOrchestrate(),
     };
     if (requireCompleteSpec) payload.require_complete_spec = true;
@@ -1137,7 +1143,7 @@ async function makeIdeaDraft(proposal) {
     const keptDecisions = ideaDiscussionData && Array.isArray(ideaDiscussionData.decisions)
       ? ideaDiscussionData.decisions.filter(x => x && newNames.has(x.proposal))
       : [];
-    ideaDiscussionData = {discussion: data.discussion, proposals: data.proposals, evaluations: data.evaluations, open_questions: data.open_questions, decisions: keptDecisions} || null;
+    ideaDiscussionData = {discussion: data.discussion, proposals: data.proposals, evaluations: data.evaluations, open_questions: data.open_questions, rebuttals: data.rebuttals || [], consensus: data.consensus || null, converge_mode: data.converge_mode || "", decisions: keptDecisions} || null;
     ideaSelectedProposal = data.selected_proposal || proposal || "";
     if (proposal) recordDecision(ideaSelectedProposal, "确认", (decisionOf(ideaDiscussionData, ideaSelectedProposal) || {}).reason || "");
     renderDiscussion(ideaDiscussionData, ideaSelectedProposal);
@@ -1246,6 +1252,27 @@ function renderDiscussion(d, selected) {
     "<div class=\"eval-row\"><span class=\"eval-verdict " + (ev.verdict === "支持" ? "support" : "doubt") + "\">" + esc(ev.verdict) + "</span>" +
     "<span><b>" + esc(ev.role) + "</b> → " + esc(ev.proposal) + "　" + esc(ev.comment) + renderRisk(ev.risk) + "</span></div>"
   ).join("");
+  const stanceCls = s => s === "支持" ? "support" : s === "反驳" ? "doubt" : "supp2";
+  const rebuttals = (d.rebuttals || []).map(rb =>
+    "<div class=\"eval-row\"><span class=\"eval-verdict " + stanceCls(rb.stance) + "\">" + esc(rb.stance) + "</span>" +
+    "<span><b>" + esc(rb.role) + "</b> → 回应 " + esc(rb.target_role) + "　" + esc(rb.content) + renderRisk(rb.risk) + "</span></div>"
+  ).join("");
+  const cons = d.consensus || {};
+  const agreed = (cons.agreed || []).length ? "<ul class=\"openq\">" + cons.agreed.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul>" : "";
+  const diverged = (cons.diverged || []).map(dv =>
+    "<div class=\"dv-row\"><b>" + esc(dv.topic) + "</b>" +
+    (dv.sides || []).map(s => "<span class=\"dv-side\">" + esc(s.role) + "：" + esc(s.view) + "</span>").join("") +
+    (dv.resolution ? "<span class=\"dv-res\">收敛：" + esc(dv.resolution) + "</span>" : "") + "</div>"
+  ).join("");
+  const sug = cons.suggestion || {};
+  const sugHtml = sug.proposal
+    ? "<div class=\"cons-sug\">共识建议：<b>" + esc(sug.proposal) + "</b>　" + esc(sug.reason || "") +
+      (sug.proposal === selected ? "（已选定）" : " <button class=\"prop-act\" type=\"button\" id=\"adoptConsensusBtn\">采纳建议</button>") + "</div>"
+    : "";
+  const convergeMode = d.converge_mode ? "<span class=\"disc-sec-note\">收敛方式：" + esc(d.converge_mode) + "</span>" : "";
+  const consensusSec = (agreed || diverged || sugHtml)
+    ? "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">共识决策（收敛结果）</span>" + convergeMode + "</div>" + agreed + diverged + sugHtml + "</div>"
+    : "";
   const decisions = (Array.isArray(d.decisions) ? d.decisions : []).map(x =>
     "<div class=\"dec-row\"><span class=\"dec-act dec-" + esc(x.action) + "\">" + esc(x.action) + "</span><span>" + esc(x.proposal) +
     (x.reason ? "　理由：" + esc(x.reason) : "") + "</span></div>"
@@ -1255,6 +1282,8 @@ function renderDiscussion(d, selected) {
     "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">多体讨论（观点清单）</span><span class=\"disc-sec-note\">四角色固定，观点带依据、风险等级、触发条件与是否需裁决</span></div>" + roles + "</div>" +
     "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">建设方案（点击卡片选定；不合适可暂缓或不采纳）</span><span class=\"disc-sec-note\">只有选定的方案会进入规格</span></div><div class=\"prop-cards\">" + proposals + "</div></div>" +
     "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">多方评价（分歧与风险）</span></div>" + evals + "</div>" +
+    (rebuttals ? "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">第二轮回应（互相回应，走向收敛）</span><span class=\"disc-sec-note\">每条回应点名对象与立场；反驳需给替代建议</span></div>" + rebuttals + "</div>" : "") +
+    consensusSec +
     (decisions ? "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">决策记录（你的取舍）</span></div>" + decisions + "</div>" : "") +
     (openq ? "<div class=\"disc-sec\"><div class=\"disc-sec-head\"><span class=\"disc-sec-title\">未决问题（需你拍板）</span></div>" + openq + "</div>" : "") +
     "<div class=\"disc-export\"><button type=\"button\" id=\"exportDiscussionBtn\">导出讨论与评价记录（Markdown）</button></div>";
@@ -1274,6 +1303,8 @@ function renderDiscussion(d, selected) {
   });
   const exportBtn = box.querySelector("#exportDiscussionBtn");
   if (exportBtn) exportBtn.onclick = exportDiscussion;
+  const adoptBtn = box.querySelector("#adoptConsensusBtn");
+  if (adoptBtn && sug.proposal) adoptBtn.onclick = (ev) => { ev.stopPropagation(); selectProposal(sug.proposal); };
 }
 
 async function selectProposal(name) {
@@ -1313,6 +1344,26 @@ function buildDiscussionMarkdown() {
     lines.push("- [" + ev.verdict + "] " + ev.role + " → " + ev.proposal + "：" + ev.comment +
       (ev.risk && typeof ev.risk === "object" && ev.risk.content ? "（风险：" + ev.risk.content + (ev.risk.severity ? "｜" + ev.risk.severity : "") + "）" : ""));
   });
+  if ((d.rebuttals || []).length) {
+    lines.push("", "## 第二轮回应（收敛过程）");
+    d.rebuttals.forEach(rb => {
+      lines.push("- [" + rb.stance + "] " + rb.role + " → 回应 " + rb.target_role + "：" + rb.content +
+        (rb.risk && typeof rb.risk === "object" && rb.risk.content ? "（风险：" + rb.risk.content + "）" : ""));
+    });
+  }
+  const cons = d.consensus || {};
+  if ((cons.agreed || []).length || (cons.diverged || []).length || (cons.suggestion || {}).proposal) {
+    lines.push("", "## 共识决策" + (d.converge_mode ? "（" + d.converge_mode + "）" : ""));
+    (cons.agreed || []).forEach(x => lines.push("- 共识：" + x));
+    (cons.diverged || []).forEach(dv => {
+      lines.push("- 分歧：" + dv.topic);
+      (dv.sides || []).forEach(s => lines.push("  - " + s.role + "：" + s.view));
+      if (dv.resolution) lines.push("  - 收敛：" + dv.resolution);
+    });
+    if (cons.suggestion && cons.suggestion.proposal) {
+      lines.push("- 建议方案：" + cons.suggestion.proposal + (cons.suggestion.reason ? "（" + cons.suggestion.reason + "）" : ""));
+    }
+  }
   const decisions = Array.isArray(d.decisions) ? d.decisions : [];
   if (decisions.length) {
     lines.push("", "## 决策记录");
@@ -1657,7 +1708,7 @@ function renderPlan() {
     ${p.valid ? "" : `<div class="banner err">计划未通过校验，以下问题需先修正：<br>${p.errors.map(esc).join("<br>")}</div>`}
     <div class="card">
       <h4>${esc(p.plan_id)}<span class="sub">策略：${esc(strategyLabel(p.strategy))} · 生成于 ${esc(p.generated_at)}</span>
-        <span style="margin-left:auto"><button id="simBtn" class="ghost">▷ 演练推进</button></span></h4>
+        <span style="margin-left:auto"><button id="simFailBtn" class="ghost">⚡ 注入失败→动态重排</button><button id="simBtn" class="ghost">▷ 演练推进</button></span></h4>
       <div class="stats">
         <div class="stat"><b>${st.task_count || 0}</b><span>任务总数</span></div>
         <div class="stat"><b>${st.batch_count || 0}</b><span>执行批次</span></div>
@@ -1733,6 +1784,8 @@ function renderPlan() {
   });
   const sim = $("#simBtn");
   if (sim) sim.onclick = simulateRun;
+  const simFail = $("#simFailBtn");
+  if (simFail) simFail.onclick = injectFailAndReplan;
   if (state.planDiff) renderPlanDiff(state.planDiff);
 }
 
@@ -1861,17 +1914,46 @@ async function simulateRun() {
   if (!state.plan) return;
   const data = await api("/api/simulate", {tasks: state.tasks, plan: state.plan});
   const evs = data.events || [];
-  let done = {};
+  state.simDone = {};
   evs.forEach((e, i) => {
     setTimeout(() => {
       if (e.event_type === "start") e.event_type = "info";
-      logEvent(e.event_type === "done" ? "done" : "info", "run", e.task_id || "task", e.message);
+      logEvent(e.event_type === "done" ? "done" : e.event_type === "fail" ? "error" : "info", "run", e.task_id || "task", e.message);
       if (e.event_type === "done") {
-        done[e.task_id] = true;
+        state.simDone[e.task_id] = true;
         markChipDone(e.task_id);
       }
     }, i * 45);
   });
+}
+
+async function injectFailAndReplan() {
+  if (!state.plan || state.busy) return;
+  const dependents = {};
+  state.tasks.forEach(t => (t.depends_on || []).forEach(d => { dependents[d] = (dependents[d] || 0) + 1; }));
+  const inPlan = new Set((state.plan.batches || []).flatMap(b => b.task_ids || []));
+  const candidates = state.tasks.filter(t => inPlan.has(t.task_id) && t.status !== "done");
+  if (!candidates.length) { logEvent("warn", "replan", "跳过", "没有可注入失败的任务"); return; }
+  const victim = candidates.sort((a, b) => (dependents[b.task_id] || 0) - (dependents[a.task_id] || 0))[0];
+  setBusy(true);
+  try {
+    const sim = await api("/api/simulate", {tasks: state.tasks, plan: state.plan, fail_task_ids: [victim.task_id]});
+    (sim.events || []).forEach(e => logEvent(e.event_type === "fail" ? "error" : e.event_type === "done" ? "done" : "info", "run", e.task_id || "task", e.message));
+    logEvent("warn", "replan", "触发", `注入失败：${victim.task_id} ${victim.title}，下游受影响，自动触发动态重排`);
+    const data = await api("/api/replan", {
+      spec: state.spec, tasks: state.tasks, plan: state.plan,
+      failed_task_ids: [victim.task_id], done_task_ids: Object.keys(state.simDone || {}),
+      orchestrate: readOrchestrate(),
+    });
+    if (!data.ok) { logEvent("error", "replan", "失败", data.error || "未知错误"); return; }
+    applyResult(data, true);
+    switchTab("plan");
+    logEvent("info", "replan", "完成", `动态重排完成：${(data.plan_diff || []).length} 条计划差异，失败任务已纳入返工`);
+  } catch (e) {
+    logEvent("error", "replan", "失败", e.message);
+  } finally {
+    setBusy(false);
+  }
 }
 
 function markChipDone(id) {
@@ -2145,6 +2227,7 @@ async function saveWorkflow() {
     config: {
       granularity: $("#granularity").value, strategy: $("#strategy").value,
       max_parallel: $("#maxParallel").value, per_role_wip_limit: $("#wipLimit").value,
+      auto_review: $("#autoReview").value,
     },
     result: { spec: state.spec, tasks: state.tasks, plan: state.plan, coverage: state.coverage, meta: state.meta },
     saved_at: new Date().toISOString(),
@@ -2163,6 +2246,7 @@ function restoreWorkflow(wf) {
       if (wf.config.strategy) $("#strategy").value = wf.config.strategy;
       if (wf.config.max_parallel) $("#maxParallel").value = wf.config.max_parallel;
       if (wf.config.per_role_wip_limit != null && wf.config.per_role_wip_limit !== "") $("#wipLimit").value = wf.config.per_role_wip_limit;
+      if (wf.config.auto_review) $("#autoReview").value = wf.config.auto_review;
     }
     applyResult({...wf.result, events: []}, true);
     $("#rePlanBtn").disabled = !state.tasks.length;

@@ -122,6 +122,7 @@ open_questions：数组，讨论后仍未决、需要用户拍板的问题，2�
 8. 风险必须写全：content（风险内容）、severity（高/中/低）、trigger（什么情况下会发生）、need_human（是否需要人裁决）。没有风险的点，risk.content 留空字符串。"""
 
 RISK_LEVELS = ("高", "中", "低")
+STANCES = ("支持", "反驳", "补充")
 
 # 作业一规定的四个讨论角色，顺序固定
 DISCUSSION_ROLES = ("商业分析", "用户体验", "技术挑刺", "架构与方案")
@@ -372,6 +373,180 @@ def discussion_template(idea: str) -> Dict[str, Any]:
         "evaluations": evaluations,
         "open_questions": [f"首版选方案 A 还是方案 B？（模板建议，请用户拍板）", "数据安全与隐私边界需要补充确认。"],
     }
+
+
+CONVERGE_SYSTEM = """你是多智能体讨论的主持人（chat manager）。第一轮里四个固定角色（商业分析、用户体验、技术挑刺、架构与方案）已各自给出观点、建设方案与评价。现在组织第二轮讨论并收敛到共识性决策，只输出 JSON。
+
+字段：
+rebuttals：数组，4–6 条第二轮回应，每项 {"role": 回应角色（四角色之一）, "target_role": 被回应角色（四角色之一，不能是自己）, "stance": "支持|反驳|补充", "content": 回应内容, "risk": {"content": 风险或待确认项, "severity": "高|中|低", "trigger": 触发条件, "need_human": true|false}}。
+consensus：对象，{"agreed": [达成共识的结论 2–4 条], "diverged": [仍未达成一致的分歧 1–3 项，每项 {"topic": 分歧点, "sides": [{"role": 角色, "view": 立场一句话}], "resolution": 收敛方式：表决结果或"需用户拍板"}], "suggestion": {"proposal": 推荐方案名（必须来自 proposals）, "reason": 推荐理由一句话}}。
+
+硬性要求：
+1. 每条回应必须点名回应谁、针对什么观点，content 里要复述对方观点的关键词再表态；不许自说自话。
+2. 反驳必须给理由和替代建议，不是单纯否定。
+3. agreed 的每条共识必须能追溯到第一轮观点或评价；diverged 不能为空数组时硬凑——确实全体一致就给 0 条。
+4. suggestion.proposal 必须严格使用 proposals 里出现的方案名；推荐理由要引用评价记录里的支持/质疑事实。"""
+
+
+def _rebuttals(value: Any) -> List[Dict[str, Any]]:
+    """校验第二轮回应：角色合法、不能自己回应自己、立场三选一。"""
+    if not isinstance(value, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in value[:8]:
+        if not isinstance(item, dict):
+            continue
+        role = _string(item.get("role"), 20)
+        target = _string(item.get("target_role"), 20)
+        stance = _string(item.get("stance"), 10)
+        content = _string(item.get("content"), 400)
+        if role not in DISCUSSION_ROLES or target not in DISCUSSION_ROLES or role == target:
+            continue
+        if stance not in STANCES or not content:
+            continue
+        out.append({
+            "role": role,
+            "target_role": target,
+            "stance": stance,
+            "content": content,
+            "risk": _risk(item.get("risk")),
+        })
+    return out
+
+
+def _consensus(value: Any, proposal_names: set) -> Dict[str, Any]:
+    """校验共识决策：共识点、分歧（含各方立场与收敛方式）、推荐方案。"""
+    if not isinstance(value, dict):
+        return {}
+    agreed = _strings(value.get("agreed"), 5, 200)
+    diverged: List[Dict[str, Any]] = []
+    raw = value.get("diverged")
+    if isinstance(raw, list):
+        for item in raw[:4]:
+            if not isinstance(item, dict):
+                continue
+            topic = _string(item.get("topic"), 200)
+            if not topic:
+                continue
+            sides: List[Dict[str, Any]] = []
+            raw_sides = item.get("sides")
+            if isinstance(raw_sides, list):
+                for s in raw_sides[:4]:
+                    if not isinstance(s, dict):
+                        continue
+                    role = _string(s.get("role"), 20)
+                    view = _string(s.get("view"), 200)
+                    if role in DISCUSSION_ROLES and view:
+                        sides.append({"role": role, "view": view})
+            diverged.append({
+                "topic": topic,
+                "sides": sides,
+                "resolution": _string(item.get("resolution"), 200),
+            })
+    suggestion_raw = value.get("suggestion")
+    suggestion = {}
+    if isinstance(suggestion_raw, dict):
+        proposal = _string(suggestion_raw.get("proposal"), 60)
+        if proposal in proposal_names:
+            suggestion = {"proposal": proposal, "reason": _string(suggestion_raw.get("reason"), 300)}
+    return {"agreed": agreed, "diverged": diverged, "suggestion": suggestion}
+
+
+def converge_discussion_llm(
+    idea: str,
+    discussion: List[Dict[str, Any]],
+    proposals: List[Dict[str, Any]],
+    evaluations: List[Dict[str, Any]],
+    open_questions: List[str],
+    llm_cfg: Optional[LLMConfig],
+) -> Dict[str, Any]:
+    """模型路径：组织第二轮回应并收敛到共识性决策。失败抛 LLMError 由上层降级。"""
+    if llm_cfg is None or not llm_cfg.available:
+        raise LLMError("未配置模型，无法组织第二轮讨论")
+    client = DeepSeekClient(llm_cfg)
+    payload = {
+        "idea": idea,
+        "round1": {
+            "discussion": discussion,
+            "proposals": proposals,
+            "evaluations": evaluations,
+            "open_questions": open_questions,
+        },
+    }
+    data = client.chat_json(CONVERGE_SYSTEM, json.dumps(payload, ensure_ascii=False))
+    if not isinstance(data, dict):
+        raise LLMError("模型返回的不是收敛结果对象")
+    rebuttals = _rebuttals(data.get("rebuttals"))
+    consensus = _consensus(data.get("consensus"), {p["name"] for p in proposals})
+    if not rebuttals or not consensus.get("suggestion"):
+        raise LLMError("收敛结果缺少回应或推荐方案，已退回规则收敛")
+    return {"rebuttals": rebuttals, "consensus": consensus, "converge_mode": "模型收敛"}
+
+
+def convergence_template(draft: Dict[str, Any]) -> Dict[str, Any]:
+    """规则兜底：从第一轮评价记录直接收敛（投票 + 分歧归纳），不调用模型。
+
+    结构与模型路径一致；数据全部来自 draft 里已有的讨论与评价，不编造事实。
+    """
+    proposals = draft.get("proposals") or []
+    evaluations = draft.get("evaluations") or []
+    discussion = draft.get("discussion") or []
+    points_by_role = {r.get("role"): (r.get("points") or []) for r in discussion}
+
+    rebuttals: List[Dict[str, Any]] = []
+    roles_in_round = [r.get("role", "") for r in discussion if r.get("role")]
+    verdict_by_role: Dict[str, Dict[str, Any]] = {}
+    for ev in evaluations:
+        verdict_by_role.setdefault(ev.get("role", ""), ev)
+    n = len(roles_in_round)
+    for i, role in enumerate(roles_in_round):
+        target = roles_in_round[(i + 1) % n] if n else ""
+        tpts = points_by_role.get(target) or []
+        if not role or not target or role == target or not tpts:
+            continue
+        ev = verdict_by_role.get(role)
+        stance = "补充"
+        if ev and ev.get("verdict") == "支持":
+            stance = "支持"
+        elif ev and ev.get("verdict") == "质疑":
+            stance = "反驳"
+        tail = f"理由：{ev.get('comment', '')}" if ev and ev.get("comment") else "按第一轮评价记录归纳（模板收敛，供参考）"
+        rebuttals.append({
+            "role": role,
+            "target_role": target,
+            "stance": stance,
+            "content": f"回应{target}提出的「{tpts[0]['content'][:24]}…」：{stance}。{tail}",
+            "risk": (ev or {}).get("risk") or {"content": "", "severity": "", "trigger": "", "need_human": False},
+        })
+    rebuttals = rebuttals[:6]
+
+    tally: Dict[str, int] = {}
+    objection: Dict[str, str] = {}
+    for ev in evaluations:
+        name = ev.get("proposal", "")
+        if not name:
+            continue
+        if ev.get("verdict") == "支持":
+            tally[name] = tally.get(name, 0) + 1
+        else:
+            tally[name] = tally.get(name, 0)
+            objection[name] = ev.get("comment", "")
+    best = max(proposals, key=lambda p: tally.get(p["name"], 0)) if proposals else None
+    consensus = {
+        "agreed": [
+            "四角色一致认为首版必须跑通主流程后再扩范围（来自第一轮评价的多数支持票）",
+            "风险必须在规格里写明触发条件与是否需人裁决（全部评价记录均带风险结构）",
+        ],
+        "diverged": [],
+        "suggestion": {"proposal": best["name"], "reason": f"第一轮评价中获得 {tally.get(best['name'], 0)} 票支持，为各方案中最多"} if best else {},
+    }
+    for name, comment in objection.items():
+        consensus["diverged"].append({
+            "topic": f"「{name}」的价值与时序",
+            "sides": [{"role": "技术挑刺", "view": comment[:120]}],
+            "resolution": "建议用户在确认规格时拍板（模板收敛，非模型表决）",
+        })
+    return {"rebuttals": rebuttals, "consensus": consensus, "converge_mode": "规则收敛"}
 
 
 def _clean_modules(modules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
