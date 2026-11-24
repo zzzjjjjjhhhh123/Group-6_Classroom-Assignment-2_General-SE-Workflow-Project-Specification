@@ -377,6 +377,16 @@
   .trace-bar b{color:#2b3f66}
   .trace-bar .tt{background:#e8f0fd;border-radius:6px;padding:2px 7px;white-space:nowrap}
   .trace-bar .tt.bad{background:#fdecec;color:#a33d3d}
+  .runs-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0}
+  .runs-toolbar select{flex:1;min-width:240px;padding:7px 9px;border:1px solid #d9e0ec;border-radius:8px;background:#fff;font-size:11.5px;color:#2b3f66}
+  .runs-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:8px;margin:10px 0}
+  .metric{padding:9px 11px;border:1px solid #e2e7f0;border-radius:10px;background:#fbfcfe}
+  .metric span{display:block;font-size:10.5px;color:#7a869f}
+  .metric b{display:block;margin-top:3px;font-size:12.5px;color:#2b3f66;font-weight:500;line-height:1.5}
+  .metric.warn b{color:#8a6d1a}
+  .metric.bad b{color:#a33d3d}
+  .metric.wide{grid-column:1/-1}
+  .runs-report{white-space:pre-wrap;font-size:11.5px;line-height:1.65;background:#fbfcfe;border:1px solid #e2e7f0;border-radius:10px;padding:12px 14px;max-height:560px;overflow:auto;color:#2b3f66;font-family:var(--font-mono,ui-monospace,monospace)}
   .disc-sec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
   .disc-sec-title{color:#34415b;font-size:11px;font-weight:700}
   .disc-sec-note{color:#8d93a0;font-size:10px}
@@ -825,6 +835,7 @@
       <div class="tab on" data-pane="spec">规格解析 <span class="n" id="nSpec"></span></div>
       <div class="tab" data-pane="tasks">任务分解 <span class="n" id="nTask"></span></div>
       <div class="tab" data-pane="plan">编排与可视化 <span class="n" id="nPlan"></span></div>
+      <div class="tab" data-pane="runs">运行与复盘</div>
       <div class="tab" data-pane="workspace">项目工作区</div>
     </div>
 
@@ -911,8 +922,21 @@
           </section>
         </div>
       </div>
+      <div class="pane" id="pane-runs">
+        <div class="card runs-card">
+          <h4>运行记录<span class="sub">每次「想法→规格」或「分解→编排→执行」都会留下可回放的观测数据</span></h4>
+          <div class="runs-toolbar">
+            <select id="runSelect"></select>
+            <button class="ghost" id="loadRunBtn" type="button">查看复盘</button>
+            <button class="ghost" id="replayRunBtn" type="button">回放到事件流</button>
+            <button class="primary" id="exportRunBtn" type="button">导出复盘报告</button>
+            <button class="ghost" id="refreshRunsBtn" type="button">刷新</button>
+          </div>
+          <div class="runs-metrics" id="runMetrics"><div class="hint">选择一条运行记录，查看指标、计划偏差与改进建议。</div></div>
+          <pre class="runs-report" id="runReport" hidden></pre>
+        </div>
+      </div>
     </div>
-
     <div class="file-preview" id="filePreview"><div class="file-preview-card"><div class="file-preview-head"><span id="previewName">文件</span><button id="closePreviewBtn">关闭</button></div><pre id="previewContent"></pre></div></div>
     <div class="logbar collapsed" id="logbar">
       <div class="loghead" id="loghead"><b>事件流</b><span id="logCount">0 条</span><span style="margin-left:auto">点击展开 / 折叠</span></div>
@@ -927,7 +951,7 @@ const state = {
   spec: null, tasks: [], plan: null, coverage: null, meta: null,
   events: [], planDiff: null, history: [],
   selected: null, impactReqId: null, simIndex: -1, busy: false,
-  projects: [], project: null, selectedContext: new Set(), chatBusy: false,
+  projects: [], project: null, selectedContext: new Set(), chatBusy: false, runId: "",
 };
 let ideaDraftBase = "";
 let ideaDraftCurrent = "";
@@ -993,6 +1017,7 @@ async function boot(attempt = 0) {
     const box = $("#exampleChips");
     box.innerHTML = ex.examples.map(e => `<span class="chip" data-file="${e.file}">${e.name}</span>`).join("");
     box.querySelectorAll(".chip").forEach(c => c.onclick = () => loadExample(c.dataset.file));
+    loadRuns();
 
     // 支持 ?file=spec_case_b.md&strategy=max_parallel&auto=1 直接跑到结果页（课堂演示用）
     const qp = new URLSearchParams(location.search);
@@ -1052,6 +1077,8 @@ async function run(requireCompleteSpec = false) {
     applyResult(data);
     lastRunTrace = data.trace || null;
     renderTraceBar();
+    state.runId = data.run_id || "";
+    loadRuns();
     pushHistory(data);
     saveWorkflow();
   } catch (e) {
@@ -1137,7 +1164,10 @@ async function makeIdeaDraft(proposal) {
     ideaChoiceRevision++;
     ideaDraftPreviewData = data.preview || null;
     lastTrace = data.trace || null;
+    lastDraftRunId = data.run_id || "";
+    draftReceivedAt = Date.now();
     if (lastTrace) renderTraceBar();
+    loadRuns();
     // 切换方案时保留决策记录，但只保留本次生成里仍存在的方案（方案名可能变）
     const newNames = new Set((data.proposals || []).map(p => p.name));
     const keptDecisions = ideaDiscussionData && Array.isArray(ideaDiscussionData.decisions)
@@ -1456,6 +1486,9 @@ function confirmIdeaDraft() {
   $("#specText").value = draft;
   setEntryMode("spec");
   scheduleEntrySave();
+  const wait = draftReceivedAt ? Math.max(0, Date.now() - draftReceivedAt) : 0;
+  postHumanEvent(lastDraftRunId, "human.decision", "idea", {decision: "确认", reason: "用户确认规格草稿", wait_ms: wait});
+  postHumanEvent(lastDraftRunId, "gate.pass", "gate", {gate: "G1", wait_ms: wait}, true);
   run(true);
 }
 
@@ -1909,10 +1942,110 @@ function renderPlanDiff(diff) {
     <ul class="plain">${diff.map(d => `<li>${esc(d)}</li>`).join("")}</ul></div>`;
 }
 
+/* ---------------- 运行记录与复盘 ---------------- */
+let lastDraftRunId = "", draftReceivedAt = 0, lastReview = null;
+
+async function loadRuns() {
+  const sel = $("#runSelect");
+  if (!sel) return;
+  const params = state.project ? "?project_id=" + encodeURIComponent(state.project.id) : "";
+  try {
+    const data = await api("/api/runs" + params);
+    const runs = data.runs || [];
+    if (!runs.length) { sel.innerHTML = "<option value=\"\">（暂无运行记录）</option>"; return; }
+    const cur = sel.value || state.runId || runs[0].run_id;
+    sel.innerHTML = runs.map(r => {
+      const when = (r.started_at || "").replace("T", " ").slice(5, 16);
+      const label = (r.label || "未命名").slice(0, 20);
+      const dur = r.duration_ms ? (r.duration_ms >= 1000 ? (r.duration_ms / 1000).toFixed(1) + "s" : r.duration_ms + "ms") : "进行中";
+      return "<option value=\"" + esc(r.run_id) + "\"" + (r.run_id === cur ? " selected" : "") + ">" +
+        esc(when + " · " + label + " · " + dur + " · " + (r.template || "")) + "</option>";
+    }).join("");
+  } catch (e) { /* 列表失败不影响主流程 */ }
+}
+
+function renderRunMetrics(review) {
+  const box = $("#runMetrics");
+  if (!box) return;
+  const s = review.summary || {};
+  const dev = review.deviation || {};
+  const buckets = (review.attribution || {}).buckets || [];
+  const model = buckets.find(b => b.key === "model") || {};
+  const human = buckets.find(b => b.key === "human") || {};
+  const fmt = ms => !ms ? "0" : ms >= 60000 ? (ms / 60000).toFixed(1) + " 分钟" : ms >= 1000 ? (ms / 1000).toFixed(1) + " 秒" : ms + " 毫秒";
+  const failed = (s.tasks || {}).failed || 0;
+  const cards = [
+    ["总耗时", fmt(s.total_ms), ""],
+    ["模型推理", fmt(model.ms) + " · " + (model.pct || 0) + "%", ""],
+    ["人工等待", fmt(human.ms) + " · " + (human.pct || 0) + "%", (human.pct || 0) >= 20 ? "warn" : ""],
+    ["事件数", (s.event_count || 0) + " 条", ""],
+    ["计划批次", (s.plan || {}).batches || "—", ""],
+    ["失败 / 重排", failed + " / " + ((s.replans || {}).count || 0), failed ? "bad" : ""],
+  ];
+  box.innerHTML = cards.map(([k, v, cls]) => "<div class=\"metric " + cls + "\"><span>" + k + "</span><b>" + esc(String(v)) + "</b></div>").join("") +
+    "<div class=\"metric wide\"><span>偏差结论</span><b>" + esc(dev.note || "—") + "</b></div>";
+}
+
+async function openRunReview(runId) {
+  const sel = $("#runSelect");
+  const id = runId || (sel && sel.value);
+  if (!id) { logEvent("warn", "review", "跳过", "先选一条运行记录"); return; }
+  try {
+    const data = await api("/api/review?id=" + encodeURIComponent(id));
+    if (!data.ok) { logEvent("error", "review", "失败", data.error || "运行记录不存在"); return; }
+    lastReview = data;
+    renderRunMetrics(data);
+    const pre = $("#runReport");
+    pre.textContent = data.markdown || "";
+    pre.hidden = false;
+    switchTab("runs");
+  } catch (e) { logEvent("error", "review", "失败", e.message); }
+}
+
+async function replayRun() {
+  const sel = $("#runSelect");
+  const id = sel && sel.value;
+  if (!id) { logEvent("warn", "replay", "跳过", "先选一条运行记录"); return; }
+  try {
+    const data = await api("/api/run?id=" + encodeURIComponent(id));
+    const evs = data.events || [];
+    if (!evs.length) { logEvent("warn", "replay", "跳过", "这条记录没有事件"); return; }
+    $("#logbar").classList.remove("collapsed");
+    switchTab("plan");
+    logEvent("info", "replay", "回放", "开始回放 " + id + "：共 " + evs.length + " 条事件");
+    evs.forEach((e, i) => setTimeout(() => {
+      const level = e.status === "error" ? "error" : e.type === "run.end" ? "done" : "info";
+      const d = e.data || {};
+      const detail = d.message || d.detail || d.reason || (d.task_id ? d.task_id + " " + (d.title || "") : "") || (d.batch ? "第 " + d.batch + " 批" : "");
+      logEvent(level, e.stage || "replay", e.type, detail);
+      if (e.type === "task.done" && d.task_id) markChipDone(d.task_id);
+    }, i * 60));
+  } catch (e) { logEvent("error", "replay", "失败", e.message); }
+}
+
+function exportRunReport() {
+  const md = (($("#runReport") || {}).textContent || "").trim();
+  if (!md) { logEvent("warn", "review", "跳过", "先查看一份复盘报告"); return; }
+  const blob = new Blob([md], {type: "text/markdown;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "run-review-" + ((($("#runSelect") || {}).value) || "report") + ".md";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  logEvent("done", "review", "导出", "复盘报告已导出为 Markdown");
+}
+
+async function postHumanEvent(runId, type, stage, data, finish) {
+  if (!runId) return;
+  try { await api("/api/run/event", {run_id: runId, type: type, stage: stage, actor: "human", data: data || {}, finish: !!finish}); } catch (e) { /* 观测失败不影响交互 */ }
+}
+
 /* ---------------- 演练推进 ---------------- */
 async function simulateRun() {
   if (!state.plan) return;
-  const data = await api("/api/simulate", {tasks: state.tasks, plan: state.plan});
+  const payload = {tasks: state.tasks, plan: state.plan};
+  if (state.runId) payload.run_id = state.runId;
+  const data = await api("/api/simulate", payload);
   const evs = data.events || [];
   state.simDone = {};
   evs.forEach((e, i) => {
@@ -1925,6 +2058,7 @@ async function simulateRun() {
       }
     }, i * 45);
   });
+  if (data.run_id) { state.runId = data.run_id; setTimeout(loadRuns, 800); }
 }
 
 async function injectFailAndReplan() {
@@ -1937,18 +2071,24 @@ async function injectFailAndReplan() {
   const victim = candidates.sort((a, b) => (dependents[b.task_id] || 0) - (dependents[a.task_id] || 0))[0];
   setBusy(true);
   try {
-    const sim = await api("/api/simulate", {tasks: state.tasks, plan: state.plan, fail_task_ids: [victim.task_id]});
+    const simPayload = {tasks: state.tasks, plan: state.plan, fail_task_ids: [victim.task_id]};
+    if (state.runId) simPayload.run_id = state.runId;
+    const sim = await api("/api/simulate", simPayload);
     (sim.events || []).forEach(e => logEvent(e.event_type === "fail" ? "error" : e.event_type === "done" ? "done" : "info", "run", e.task_id || "task", e.message));
     logEvent("warn", "replan", "触发", `注入失败：${victim.task_id} ${victim.title}，下游受影响，自动触发动态重排`);
-    const data = await api("/api/replan", {
+    const replanPayload = {
       spec: state.spec, tasks: state.tasks, plan: state.plan,
       failed_task_ids: [victim.task_id], done_task_ids: Object.keys(state.simDone || {}),
-      orchestrate: readOrchestrate(),
-    });
+      orchestrate: readOrchestrate(), cause: "injected",
+    };
+    if (state.runId) replanPayload.run_id = state.runId;
+    const data = await api("/api/replan", replanPayload);
+    if (data.run_id) state.runId = data.run_id;
     if (!data.ok) { logEvent("error", "replan", "失败", data.error || "未知错误"); return; }
     applyResult(data, true);
     switchTab("plan");
     logEvent("info", "replan", "完成", `动态重排完成：${(data.plan_diff || []).length} 条计划差异，失败任务已纳入返工`);
+    loadRuns();
   } catch (e) {
     logEvent("error", "replan", "失败", e.message);
   } finally {
@@ -2001,6 +2141,7 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.dataset.pane === name));
   document.querySelectorAll(".pane").forEach(p => p.classList.toggle("on", p.id === "pane-" + name));
   $("#workflowNav").classList.toggle("on", name !== "workspace");
+  if (name === "runs") loadRuns();
 }
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -2008,6 +2149,11 @@ function escapeXml(s) { return esc(s); }
 
 /* ---------------- 绑定 ---------------- */
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => switchTab(t.dataset.pane));
+$("#loadRunBtn").onclick = () => openRunReview();
+$("#replayRunBtn").onclick = replayRun;
+$("#exportRunBtn").onclick = exportRunReport;
+$("#refreshRunsBtn").onclick = loadRuns;
+$("#runSelect").onchange = () => openRunReview();
 $("#showCreateProjectBtn").onclick = () => { const box = $("#sidebarProjectCreate"); box.classList.toggle("on"); if (box.classList.contains("on")) $("#projectName").focus(); };
 $("#workflowNav").onclick = () => { switchTab("spec"); $("#workflowNav").classList.add("on"); };
 $("#createProjectBtn").onclick = createProject;
@@ -2216,6 +2362,7 @@ async function openProject(id) {
     renderProjectList(); renderProject(); renderEntryScope();
     restoreWorkflow(data.workflow);
     restoreEntry(data.entry);
+    loadRuns();
   } catch (e) { $("#chatStatus").textContent = e.message; }
 }
 

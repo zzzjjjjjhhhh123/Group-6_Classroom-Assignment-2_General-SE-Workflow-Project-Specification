@@ -70,6 +70,8 @@ JSON 对象支持 `product`、`goal`、`modules`（模块含 `name` 和 `require
 | 5 | 切「编排与可视化」 | 依赖图（按拓扑层排布、红线为关键路径）+ 批次泳道 + 阻塞清单 + 编排依据 |
 | 6 | 点「演练推进」 | 按批次逐条产生状态事件，节点置灰，事件流可回放 |
 | 7 | 依次换成案例B/C：19 条需求 → 43 条任务、29 条需求 → 64 条任务 | **代码零修改**，同一套流程跑三个不同领域 |
+| 8 | 切「运行与复盘」→ 选一条记录 → 查看复盘 | 指标卡（总耗时/模型占比/人工等待/失败与重排）、计划 vs 实际偏差表、四类归因、改进建议与完整 Markdown 报告 |
+| 9 | 点「回放到事件流」 | 按 seq 顺序重放历史事件，任务状态逐条点亮——同一份数据可换视角反复看 |
 
 ## 关键机制（这几条是答辩时最容易被问的）
 
@@ -85,6 +87,9 @@ JSON 对象支持 `product`、`goal`、`modules`（模块含 `name` 和 `require
 10. **讨论会收敛（chatmanager 式）**：第二轮每个角色必须点名回应其他角色的观点（支持/反驳/补充，反驳需给理由与替代建议），主持人汇总出共识点、保留分歧（含各方立场与收敛方式）并给出推荐方案；建议可一键采纳进决策记录。模型收敛为主路径，评价记录投票归纳为规则兑底，收敛方式会在界面上标明。
 11. **实现阶段闭环**：可开关“评审任务”（默认关，保持已演练的批次数字稳定）；打开后每个模块在联调测试后自动追加评审任务，编排图呈现编码→测试→评审的分层闭环，评审交付物为评审结论 + 问题清单。
 12. **编排动态化**：演练推进可一键“注入失败→动态重排”：失败任务自动纳入返工并重排其下游，已完成任务不再排期，系统按当前策略重新分批并逐条列出与失败前计划的差异——这就是“执行中出问题→计划自动演化”的动态闭环。
+13. **可观测底座（Run / Span / Event）**：每次执行是一个 `run`，阶段是 `span`，过程是严格递增的 `event`；事件只追加不修改，落 `projects/<id>/runs/<run_id>/{run.json, events.jsonl, artifacts/}`，零数据库依赖。埋点覆盖想法、收敛、解析、分解、质量、编排、执行、重排与人工决策九类，`seq` 连续可回放。
+14. **复盘能力（指标 / 偏差 / 归因 / 建议）**：任一历史 run 可一键生成复盘报告——阶段耗时瀑布、模型与人工占比、计划 vs 实际偏差表（批次/任务/失败/重排）、四类归因、可直接执行的改进建议，并可导出 Markdown。界面“运行与复盘”页支持选择记录、查看报告、回放到事件流。
+15. **人工等待被量化**：闸门确认（G1 想法确认 / G3 计划审批 / G4 失败处置）的等待时长随 `gate.pass` 事件记录；当等待超过运行时长时，归因会明确写出“流程实际周期由人决定”，而不是把人的时间吞进总耗时。
 
 ## 可配置项
 
@@ -113,9 +118,12 @@ se-workflow/
 ├─ contracts.py      唯一契约源：数据结构 + 校验 + 需求覆盖检查
 ├─ config.py         可配置项与 LLM 配置
 ├─ llm.py            DeepSeek 客户端（urllib，无第三方依赖）
-├─ web/index.html    单页可视化（原生 JS，自绘 SVG 依赖图）
-├─ examples/         两份不同产品的样例设计规格
-└─ tests/            39 条自测（python -m unittest discover -s tests -v）
+├─ observability.py 可观测底座：Run / Span / Event + Run Store（runs/<id>/events.jsonl）
+├─ metrics.py       复盘分析：指标聚合、计划偏差、耗时归因、改进建议、Markdown 报告
+├─ web/index.html    单页可视化（原生 JS，自绘 SVG 依赖图 + 运行与复盘页）
+├─ docs/            可观测框架设计（六层结构、事件规范、分工、里程碑）
+├─ examples/         三份不同产品的样例设计规格
+└─ tests/            49 条自测（python -m unittest discover -s tests -v）
 ```
 
 ## 接口
@@ -126,8 +134,12 @@ se-workflow/
 | GET | `/api/examples` `/api/example?file=` | 样例规格列表 / 原文 |
 | POST | `/api/run` | `{spec_text, decompose, orchestrate, project_id?}` → spec + tasks + plan + coverage + events + trace |
 | POST | `/api/reorchestrate` | `{spec, tasks, orchestrate}` → 新计划 + 版本差异（人工审核后重排） |
-| POST | `/api/simulate` | `{tasks, plan, fail_task_ids?}` → 演练推进的状态事件（可注入失败） |
-| POST | `/api/replan` | `{spec, tasks, plan, failed_task_ids, done_task_ids, orchestrate}` → 动态重排：失败返工、已完成不排期 + 计划差异 |
+| POST | `/api/simulate` | `{tasks, plan, fail_task_ids?, run_id?}` → 演练推进的状态事件（同时写入 Run Store） |
+| POST | `/api/replan` | `{spec, tasks, plan, failed_task_ids, done_task_ids, orchestrate, run_id?}` → 动态重排 + 计划差异（续写同一 run） |
+| GET | `/api/runs?project_id=&limit=` | 运行记录列表（新→旧；不传 project_id 则跨项目列出） |
+| GET | `/api/run?id=` | 单次运行：元信息 + 事件流（最近 300 条）+ 指标 + 偏差 + 归因 + 建议 |
+| GET | `/api/review?id=` | 同上，另含可直接交付的 Markdown 复盘报告 |
+| POST | `/api/run/event` | `{run_id, type, stage, actor, data, finish?}` → 人工事件入观测（`human.* / gate.* / task.* / anomaly`） |
 | GET | `/api/projects` `/api/project?id=` | 项目列表 / 项目资料、聊天历史与链路追踪（`traces`） |
 | GET | `/api/project/file?id=&name=` | 读取项目中的单个文本文件 |
 | POST | `/api/projects` | `{name}` → 创建本地项目 |
@@ -152,3 +164,5 @@ se-workflow/
 - 工期估算由任务类型给出基准值再按粒度缩放，不与具体团队产能挂钩（可后续接入人员日历）。
 - 「演练推进」是演示用推演，按批次产生事件，不代表真的执行了开发任务。
 - 计划版本差异记录在内存中，服务重启后清空。
+- 运行记录每个项目默认保留最近 30 条（滚动清理）；执行推进仍是演示推演，不接真实 CI。
+- 复盘建议是规则推断（基于覆盖率、失败、并行度、人工等待），不是模型生成；因此只给方向与做法，不自动改配置。
