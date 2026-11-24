@@ -47,6 +47,8 @@ from idea_to_spec import (
 )
 from llm import LLMError
 from spec_parser import parse_spec
+import metrics
+from observability import RunRecorder, list_all_runs, list_runs, load_run, open_span, read_events
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -116,15 +118,94 @@ def _persist_trace(project_id, trace: dict, extra: dict = None) -> None:
         pass
 
 
+def _start_run(project_id, template: str, config: dict, label: str = ""):
+    """开一次运行记录；观测出问题不能拖垮主流程，失败即返回 None。"""
+    try:
+        return RunRecorder.start(ROOT, project_id=project_id, template=template, config=config, label=label)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _finish_run(rec, status: str = "ok") -> None:
+    if rec is None:
+        return
+    try:
+        rec.finish(status=status)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _emit_run(rec, etype: str, **kwargs) -> None:
+    if rec is None:
+        return
+    try:
+        rec.emit(etype, **kwargs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _emit_trace_calls(rec, trace: dict, begin: int, stage: str) -> int:
+    """把 trace 里尚未落成事件的模型调用按阶段补发，返回已发到的下标。"""
+    calls = trace.get("llm_calls") or []
+    for call in calls[begin:]:
+        _emit_run(
+            rec,
+            "llm.call" if call.get("ok", True) else "llm.fail",
+            stage=stage,
+            actor="pm-agent",
+            status="ok" if call.get("ok", True) else "error",
+            data={
+                "name": call.get("name"),
+                "model": call.get("model"),
+                "duration_ms": call.get("duration_ms"),
+                "ok": call.get("ok", True),
+                **(({"error": call.get("error")}) if call.get("error") else {}),
+            },
+        )
+    return len(calls)
+
+
+def _attach_run(run_id):
+    """按 run_id 接续已有运行；找不到就返回 (None, run_id)，不影响主流程。"""
+    rid = str(run_id or "").strip()
+    if not rid:
+        return None, ""
+    try:
+        return RunRecorder.attach(ROOT, rid), rid
+    except Exception:  # noqa: BLE001
+        return None, rid
+
+
+def _review_payload(run_id: str) -> dict:
+    """把一次运行翻译成指标 + 偏差 + 归因 + 建议 + Markdown 报告。"""
+    meta = load_run(ROOT, run_id)
+    events = read_events(ROOT, run_id)
+    summary = metrics.summarize(meta, events)
+    dev = metrics.deviation(summary)
+    attr = metrics.attribution(summary)
+    sugs = metrics.suggestions(summary, dev)
+    review = {
+        "run": {k: meta.get(k) for k in ("run_id", "project_id", "label", "template", "status", "started_at", "finished_at", "event_count", "duration_ms")},
+        "summary": summary,
+        "deviation": dev,
+        "attribution": attr,
+        "suggestions": sugs,
+        "markdown": metrics.report_markdown(meta, summary, dev, attr, sugs, events),
+    }
+    return review
+
+
 def build_draft(idea: str, details: str = "", proposal: str = "", project_id=None) -> dict:
     """想法 → 多体讨论 + 建设方案 + 多方评价 + 规格草稿。
 
     proposal 非空表示用户已选定方案，规格对齐该方案重新生成。
     模型优先（任意领域都能进），失败退回快速模板并说明原因。
-    全程记录 trace（链路编号 + 每次模型调用的耗时/成败），随项目快照持久化。
+    全程记录 trace（链路编号 + 每次模型调用的耗时/成败），并写入 Run Store（可回放、可复盘）。
     """
     trace = _new_trace("idea_to_spec")
     started = time.time()
+    rec = _start_run(project_id, "idea-to-spec", {"model": _LLM_CFG.model if _LLM_CFG.available else "rule-template"}, (idea or "")[:40])
+    idea_stage = open_span(rec, "idea", "pm-agent", chars=len(idea)).begin()
     cfg = _LLM_CFG
     if cfg.available:
         # 入口要"敢等"一点，但别把浏览器拖死：单独给 45s 上限
@@ -135,6 +216,8 @@ def build_draft(idea: str, details: str = "", proposal: str = "", project_id=Non
             draft["elapsed"] = round(time.time() - t0, 1)
             _record_llm_call(trace, "讨论与规格生成", cfg.model, t0, True)
         except ValueError:
+            idea_stage.end(status="error", error="想法内容无效")
+            _finish_run(rec, "failed")
             raise
         except Exception as exc:  # 模型层任何异常都不该让入口 500：一律退回模板
             _record_llm_call(trace, "讨论与规格生成", cfg.model, t0, False, exc)
@@ -150,7 +233,18 @@ def build_draft(idea: str, details: str = "", proposal: str = "", project_id=Non
             draft["warning"] = "未配置模型，当前为快速模板：只做结构引导，不替你编造功能。"
         _record_llm_call(trace, "模板兜底", "rule-template", t0, True)
 
+    idea_stage.end(discussion=len(draft.get("discussion") or []), proposals=len(draft.get("proposals") or []), mode=draft.get("mode"))
+    _emit_run(
+        rec,
+        "artifact.produced",
+        stage="idea",
+        actor="pm-agent",
+        data={"kind": "discussion", "count": len(draft.get("proposals") or []), "quality": {"points": len(draft.get("discussion") or []), "proposals": len(draft.get("proposals") or [])}},
+    )
+    emitted = _emit_trace_calls(rec, trace, 0, "idea")
+
     # 第二轮收敛（chatmanager 式）：互相回应 → 共识决策。LLM 主路径 + 规则兜底。
+    conv_stage = open_span(rec, "converge", "pm-agent").begin()
     if draft.get("discussion"):
         t_conv = time.time()
         conv = None
@@ -167,6 +261,8 @@ def build_draft(idea: str, details: str = "", proposal: str = "", project_id=Non
                 )
                 _record_llm_call(trace, "第二轮收敛", cfg.model, t_conv, True)
             except ValueError:
+                conv_stage.end(status="error")
+                _finish_run(rec, "failed")
                 raise
             except Exception as exc:
                 _record_llm_call(trace, "第二轮收敛", cfg.model, t_conv, False, exc)
@@ -177,10 +273,29 @@ def build_draft(idea: str, details: str = "", proposal: str = "", project_id=Non
         draft["rebuttals"] = conv["rebuttals"]
         draft["consensus"] = conv["consensus"]
         draft["converge_mode"] = conv["converge_mode"]
+    cons = draft.get("consensus") or {}
+    conv_stage.end(
+        rebuttals=len(draft.get("rebuttals") or []),
+        agreed=len(cons.get("agreed") or []),
+        diverged=len(cons.get("diverged") or []),
+        mode=draft.get("converge_mode") or "",
+    )
+    _emit_run(
+        rec,
+        "artifact.produced",
+        stage="converge",
+        actor="pm-agent",
+        data={"kind": "consensus", "count": len(cons.get("agreed") or []), "quality": {"rebuttals": len(draft.get("rebuttals") or []), "diverged": len(cons.get("diverged") or [])}},
+    )
+    _emit_trace_calls(rec, trace, emitted, "converge")
 
     _finish_trace(trace, started)
     draft["trace"] = trace
     _persist_trace(project_id, trace, {"idea": (idea or "")[:80], "mode": draft.get("mode")})
+    if rec is not None:
+        rec.label = str((idea or "").strip()[:60] or "未命名想法")
+        _finish_run(rec, "ok")
+        draft["run_id"] = rec.run_id
     return draft
 
 
@@ -299,6 +414,37 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": False, "error": "样例不存在"}, 404)
                 with open(fp, "r", encoding="utf-8") as f:
                     return self._json({"ok": True, "text": f.read()})
+            if path == "/api/runs":
+                pid = (query.get("project_id") or [""])[0].strip()
+                limit = (query.get("limit") or ["30"])[0]
+                try:
+                    limit = max(1, min(100, int(limit)))
+                except ValueError:
+                    limit = 30
+                runs = list_runs(ROOT, pid, limit) if pid else list_all_runs(ROOT, limit)
+                return self._json({"ok": True, "runs": runs})
+            if path == "/api/run":
+                run_id = (query.get("id") or [""])[0].strip()
+                if not run_id:
+                    return self._json({"ok": False, "error": "缺少运行编号"}, 400)
+                try:
+                    review = _review_payload(run_id)
+                except FileNotFoundError:
+                    return self._json({"ok": False, "error": "运行记录不存在"}, 404)
+                events = read_events(ROOT, run_id)
+                review["ok"] = True
+                review["events"] = events[-300:]
+                return self._json(review)
+            if path == "/api/review":
+                run_id = (query.get("id") or [""])[0].strip()
+                if not run_id:
+                    return self._json({"ok": False, "error": "缺少运行编号"}, 400)
+                try:
+                    review = _review_payload(run_id)
+                except FileNotFoundError:
+                    return self._json({"ok": False, "error": "运行记录不存在"}, 404)
+                review["ok"] = True
+                return self._json(review)
             if path == "/favicon.ico":
                 return self._send(204, b"", "image/x-icon")
             return self._json({"ok": False, "error": f"未知路径 {path}"}, 404)
@@ -402,13 +548,23 @@ class Handler(BaseHTTPRequestHandler):
                 ocfg = _orchestrate_cfg(body.get("orchestrate") or {})
                 trace = _new_trace("decompose_orchestrate")
                 started = time.time()
+                rec = _start_run(
+                    body.get("project_id"),
+                    str(body.get("template") or "web-app"),
+                    {"decompose": dcfg.to_dict(), "orchestrate": ocfg.to_dict()},
+                    "",
+                )
                 with _LOCK:
-                    result = _PIPELINE.run(text, dcfg, ocfg)
+                    result = _PIPELINE.run(text, dcfg, ocfg, recorder=rec)
                 _finish_trace(trace, started)
                 trace["tasks"] = len(result.get("tasks") or [])
                 trace["strategy"] = ocfg.strategy
                 result["trace"] = trace
                 _persist_trace(body.get("project_id"), trace, {"strategy": ocfg.strategy})
+                if rec is not None:
+                    rec.label = str(((result.get("spec") or {}).get("product") or "")[:60] or "未命名规格")
+                    _finish_run(rec, "ok" if result.get("ok") else "failed")
+                    result["run_id"] = rec.run_id
                 return self._json(result)
 
             if path == "/api/draft-spec":
@@ -445,13 +601,43 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(result)
 
             if path == "/api/simulate":
-                return self._json(simulate(body.get("tasks") or [], body.get("plan") or {}, body.get("fail_task_ids") or []))
+                rec, run_id = _attach_run(body.get("run_id"))
+                stage = open_span(rec, "execute", "executor").begin()
+                result = simulate(body.get("tasks") or [], body.get("plan") or {}, body.get("fail_task_ids") or [], recorder=rec)
+                stage.end(tasks=len(body.get("tasks") or []), failed=len(body.get("fail_task_ids") or []))
+                if rec is not None:
+                    _finish_run(rec, "ok")
+                    result["run_id"] = run_id
+                return self._json(result)
 
             if path == "/api/replan":
                 ocfg = _orchestrate_cfg(body.get("orchestrate") or {})
+                rec, run_id = _attach_run(body.get("run_id"))
                 with _LOCK:
-                    result = _PIPELINE.dynamic_replan(body, ocfg)
+                    result = _PIPELINE.dynamic_replan(body, ocfg, recorder=rec)
+                if rec is not None:
+                    _finish_run(rec, "ok")
+                    result["run_id"] = run_id
                 return self._json(result)
+
+            if path == "/api/run/event":
+                # 人工交互也入观测：闸门等待、确认、改任务、接管都走这里
+                etype = str(body.get("type") or "").strip()
+                if not any(etype.startswith(p) for p in ("human.", "gate.", "task.", "anomaly")):
+                    return self._json({"ok": False, "error": "事件类型不允许"}, 400)
+                rec, run_id = _attach_run(body.get("run_id"))
+                if rec is None:
+                    return self._json({"ok": False, "error": "运行记录不存在"}, 404)
+                ev = rec.emit(
+                    etype,
+                    stage=str(body.get("stage") or ""),
+                    actor=str(body.get("actor") or "human"),
+                    status=str(body.get("status") or "ok"),
+                    data=body.get("data") if isinstance(body.get("data"), dict) else {},
+                )
+                if body.get("finish"):
+                    _finish_run(rec, "ok")
+                return self._json({"ok": True, "seq": ev.get("seq"), "run_id": run_id})
 
             if path == "/api/project/workflow":
                 pid = _project_id(body.get("project_id"))

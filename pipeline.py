@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import datetime
 import json
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from config import DecomposeConfig, LLMConfig, OrchestrateConfig, load_llm_config
+from observability import open_span
 from contracts import (
     DesignSpec,
     Task,
@@ -62,19 +64,27 @@ class Pipeline:
         spec_text: str,
         dcfg: Optional[DecomposeConfig] = None,
         ocfg: Optional[OrchestrateConfig] = None,
+        recorder=None,
     ) -> Dict[str, Any]:
         dcfg = dcfg or DecomposeConfig()
         ocfg = ocfg or OrchestrateConfig()
         log = EventLog(self.sink)
 
         log.push("input", "info", f"收到设计规格 {len(spec_text)} 字符，开始解析")
+        parse_stage = open_span(recorder, "parse", "spec-parser", chars=len(spec_text)).begin()
         try:
             spec = parse_spec(spec_text)
         except ValueError as e:
+            parse_stage.end(status="error", error=str(e))
+            _emit(recorder, "anomaly", stage="parse", data={"code": "spec_parse_failed", "detail": str(e)[:200]})
             log.push("parse", "error", str(e))
             return {"ok": False, "error": str(e), "events": _ev(log), "spec": None, "tasks": [], "plan": None}
 
         spec_errors = validate_spec(spec)
+        parse_stage.end(modules=len(spec.modules), requirements=len(spec.requirements), questions=len(spec.questions), errors=len(spec_errors))
+        _emit(recorder, "artifact.produced", stage="parse", actor="spec-parser", data={"kind": "spec", "ref": "artifacts/spec.json", "count": len(spec.requirements)})
+        if recorder is not None:
+            recorder.save_artifact("spec.json", spec.to_dict())
         log.push(
             "parse",
             "info" if not spec_errors else "warn",
@@ -83,6 +93,7 @@ class Pipeline:
         for err in spec_errors:
             log.push("parse", "warn", err)
         if not spec.requirements:
+            _emit(recorder, "anomaly", stage="parse", data={"code": "no_requirements", "detail": "规格未解析出需求条目"})
             return {
                 "ok": False,
                 "error": "规格未解析出需求条目，请参考 examples/ 的模板结构",
@@ -93,18 +104,46 @@ class Pipeline:
             }
 
         # ---- PM Agent ----
+        t_dec = time.time()
+        dec_stage = open_span(recorder, "decompose", "pm-agent", granularity=dcfg.granularity).begin()
         agent = PMAgent(self._client(), dcfg, emit=lambda p, e, m: log.push(p, e, m))
         tasks, meta = agent.decompose(spec)
+        dec_ms = int((time.time() - t_dec) * 1000)
+        dec_stage.end(tasks=len(tasks), mode=meta["mode"], llm_tasks=meta.get("llm_tasks", 0), rule_tasks=meta.get("rule_tasks", 0))
         mode_label = {"llm": "大模型分解", "rule": "规则分解", "rule_fallback": "规则兜底（LLM 不可用）"}.get(meta["mode"], meta["mode"])
         breakdown = f"（LLM {meta['llm_tasks']} / 规则补 {meta['rule_tasks']}）" if meta["mode"] == "llm" else ""
         log.push("decompose", "info", f"{mode_label}：输出 {len(tasks)} 条任务{breakdown}")
+
+        # 阶段边界口径的模型调用：LLM 分解成功记 llm.call，降级记 llm.fallback（含原因）
+        ok_llm = meta["mode"] == "llm"
+        _emit(
+            recorder,
+            "llm.call" if ok_llm else "llm.fallback",
+            stage="decompose",
+            actor="pm-agent",
+            data={
+                "name": "任务分解",
+                "model": self.llm_cfg.model if ok_llm else "rule-template",
+                "duration_ms": dec_ms,
+                "ok": ok_llm,
+                **({"error": "LLM 不可用或调用失败，已走规则兜底"} if not ok_llm else {}),
+            },
+        )
+        if recorder is not None:
+            recorder.save_artifact("tasks.json", [t.to_dict() for t in tasks])
+        _emit(recorder, "artifact.produced", stage="decompose", actor="pm-agent", data={"kind": "tasks", "ref": "artifacts/tasks.json", "count": len(tasks)})
 
         pending = [t for t in tasks if t.status == "pending"]
         if pending:
             log.push("decompose", "warn", f"{len(pending)} 条任务因缺少出处/交付物/验收标准被标为待确认，不会进入计划")
 
         # ---- 质量检查（分工③） ----
+        qual_stage = open_span(recorder, "quality", "quality").begin()
         coverage = check_coverage(tasks, spec)
+        qual_stage.end(coverage_ratio=coverage["coverage_ratio"], executable_coverage_ratio=coverage["executable_coverage_ratio"])
+        _emit(recorder, "artifact.produced", stage="quality", actor="quality", data={"kind": "coverage", "count": len(coverage.get("missing_requirements") or []), "quality": coverage})
+        if coverage.get("missing_requirements"):
+            _emit(recorder, "anomaly", stage="quality", data={"code": "coverage_gap", "detail": "未覆盖需求：" + "、".join(coverage["missing_requirements"][:8])})
         log.push(
             "quality",
             "info" if coverage["executable_coverage_ratio"] >= 0.9 else "warn",
@@ -127,9 +166,12 @@ class Pipeline:
             for err in structure_errors:
                 log.push("orchestrate", "warn", "契约校验：" + err)
         self.plan_seq += 1
+        plan_stage = open_span(recorder, "orchestrate", "orchestrator", strategy=ocfg.strategy).begin()
         plan = orchestrate(tasks, spec, ocfg, self.plan_seq)
+        plan_stage.end(batches=len(plan.batches), critical_path_days=plan.stats.get("critical_path_days", 0), valid=plan.valid)
         if not plan.valid:
             log.push("orchestrate", "error", "计划未通过校验：" + "；".join(plan.errors))
+            _emit(recorder, "anomaly", stage="orchestrate", data={"code": "plan_invalid", "detail": "；".join(plan.errors)[:200]})
         log.push(
             "orchestrate",
             "info",
@@ -138,6 +180,23 @@ class Pipeline:
         )
         if plan.blocked:
             log.push("orchestrate", "warn", f"{len(plan.blocked)} 条任务未进入批次，原因见阻塞清单")
+        _emit(
+            recorder,
+            "artifact.produced",
+            stage="orchestrate",
+            actor="orchestrator",
+            data={
+                "kind": "plan",
+                "ref": f"artifacts/plan_v{self.plan_seq}.json",
+                "plan_id": plan.plan_id,
+                "batches": len(plan.batches),
+                "tasks": len(tasks),
+                "critical_path_days": plan.stats.get("critical_path_days", 0),
+                "max_parallel_width": plan.stats.get("max_parallel_width", 0),
+            },
+        )
+        if recorder is not None:
+            recorder.save_artifact(f"plan_v{self.plan_seq}.json", plan.to_dict())
         log.push("done", "done", "任务分解与执行编排完成，可人工审核后重新编排")
 
         self.last_plan = plan
@@ -184,7 +243,7 @@ class Pipeline:
             "events": _ev(log),
         }
 
-    def dynamic_replan(self, payload: Dict[str, Any], ocfg: OrchestrateConfig) -> Dict[str, Any]:
+    def dynamic_replan(self, payload: Dict[str, Any], ocfg: OrchestrateConfig, recorder=None) -> Dict[str, Any]:
         """编排动态化：执行中注入失败后自动重排。
 
         failed_task_ids：演练/执行中失败的任务 → 重新纳入排期（返工）；
@@ -200,6 +259,14 @@ class Pipeline:
         failed = [tid for tid in (payload.get("failed_task_ids") or []) if tid in known]
         done_ids = {tid for tid in (payload.get("done_task_ids") or []) if tid in known} - set(failed)
 
+        _emit(
+            recorder,
+            "replan.trigger",
+            stage="replan",
+            actor="executor",
+            data={"cause": payload.get("cause") or ("injected" if failed else "manual"), "failed_ids": failed, "done_ids": sorted(done_ids)},
+        )
+
         for t in tasks:
             if t.task_id in done_ids:
                 t.status = "done"
@@ -207,6 +274,7 @@ class Pipeline:
                 t.status = "ready"
                 t.pending_reason = ""
                 log.push("run", "error", f"{t.task_id} {t.title} 执行失败，自动纳入返工并重排其下游")
+                _emit(recorder, "task.retry", stage="replan", actor="executor", data={"task_id": t.task_id, "reason": "失败返工"})
 
         log.push(
             "replan",
@@ -225,6 +293,13 @@ class Pipeline:
             old = _PlanShim(old_raw)
             diff = diff_plans(old, new_plan)
             log.push("diff", "info", f"与失败前计划差异 {len(diff)} 条")
+        _emit(
+            recorder,
+            "replan.done",
+            stage="replan",
+            actor="orchestrator",
+            data={"failed_ids": failed, "diff_count": len(diff), "batches": len(new_plan.batches), "done_count": len(done_ids)},
+        )
         return {
             "ok": True,
             "spec": spec.to_dict(),
@@ -316,6 +391,16 @@ def _ev(log: EventLog) -> List[Dict[str, Any]]:
     return [e.to_dict() for e in log.events]
 
 
+def _emit(recorder, etype: str, stage: str = "", actor: str = "system", status: str = "ok", data=None) -> None:
+    """观测埋点的安全出口：没有 recorder 或写盘失败都不该影响主流程。"""
+    if recorder is None:
+        return
+    try:
+        recorder.emit(etype, stage=stage, actor=actor, status=status, data=data)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _spec_from_dict(d: Dict[str, Any]) -> DesignSpec:
     from contracts import Module, Question, Requirement
 
@@ -386,11 +471,12 @@ def _tasks_from_payload(items: List[Dict[str, Any]], spec: DesignSpec) -> List[T
     return tasks
 
 
-def simulate(tasks: List[Dict[str, Any]], plan: Dict[str, Any], fail_task_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+def simulate(tasks: List[Dict[str, Any]], plan: Dict[str, Any], fail_task_ids: Optional[List[str]] = None, recorder=None) -> Dict[str, Any]:
     """演练推进：按批次顺序产出状态事件，供界面演示"运行中"的追踪视图。
 
     fail_task_ids 用于注入失败：被点名的任务产出 fail 事件而不是 done，
     供动态重排演示（这是演示用的推演，不谎称真实执行了代码）。
+    传入 recorder 时，同一批事件同时写入 Run Store，成为可回放、可复盘的观测数据。
     """
     fails = {tid for tid in (fail_task_ids or []) if tid}
     by_id = {t["task_id"]: t for t in tasks}
@@ -401,6 +487,7 @@ def simulate(tasks: List[Dict[str, Any]], plan: Dict[str, Any], fail_task_ids: O
             t = by_id.get(tid)
             if not t:
                 continue
+            meta = {"task_id": tid, "batch": b.get("batch_index"), "role": t.get("suggested_role") or "", "title": t.get("title") or ""}
             seq += 1
             events.append(
                 {
@@ -412,6 +499,7 @@ def simulate(tasks: List[Dict[str, Any]], plan: Dict[str, Any], fail_task_ids: O
                     "ts": "",
                 }
             )
+            _emit(recorder, "task.start", stage="execute", actor="executor", data=meta)
             seq += 1
             if tid in fails:
                 events.append(
@@ -424,6 +512,7 @@ def simulate(tasks: List[Dict[str, Any]], plan: Dict[str, Any], fail_task_ids: O
                         "ts": "",
                     }
                 )
+                _emit(recorder, "task.fail", stage="execute", actor="executor", status="error", data={**meta, "reason": "演示注入：交付物未通过验收"})
             else:
                 events.append(
                     {
@@ -435,6 +524,7 @@ def simulate(tasks: List[Dict[str, Any]], plan: Dict[str, Any], fail_task_ids: O
                         "ts": "",
                     }
                 )
+                _emit(recorder, "task.done", stage="execute", actor="executor", data={**meta, "deliverable": t.get("deliverable") or ""})
     return {"ok": True, "events": events}
 
 

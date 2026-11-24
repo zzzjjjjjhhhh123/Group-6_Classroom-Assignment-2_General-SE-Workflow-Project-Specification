@@ -2,6 +2,8 @@
 .env.*
 !.env.example
 projects/
+# 未绑定项目的运行记录（观测数据是运行产物，不入库）
+runs/
 __pycache__/
 *.py[cod]
 server.log
